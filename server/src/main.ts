@@ -33,6 +33,15 @@ export async function startStreamableHTTPServer(
   app.use(express.json());
 
   // REST endpoints so the workspace page can read/write checkpoints
+  app.get("/checkpoints", async (_req: Request, res: Response) => {
+    try {
+      const list = await store.list();
+      res.json(list);
+    } catch (e) {
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
   app.get("/checkpoint/:id", async (req: Request, res: Response) => {
     try {
       const data = await store.load(String(req.params.id));

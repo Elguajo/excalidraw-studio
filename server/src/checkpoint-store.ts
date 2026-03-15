@@ -14,7 +14,9 @@ const MAX_FILE_CHECKPOINTS = 100;
  */
 function validateCheckpointId(id: string): void {
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
-    throw new Error(`Invalid checkpoint id: must be alphanumeric, hyphens, or underscores`);
+    throw new Error(
+      `Invalid checkpoint id: must be alphanumeric, hyphens, or underscores`,
+    );
   }
   if (id.length > 64) {
     throw new Error(`Invalid checkpoint id: exceeds 64 character limit`);
@@ -24,6 +26,19 @@ function validateCheckpointId(id: string): void {
 export interface CheckpointStore {
   save(id: string, data: { elements: any[] }): Promise<void>;
   load(id: string): Promise<{ elements: any[] } | null>;
+  list(): Promise<{ id: string; mtime: number; title?: string }[]>;
+}
+
+/** Extract a human-readable title from a diagram's elements array.
+ *  Looks for standalone text elements (no containerId) ordered by fontSize desc.
+ *  Returns the largest-font text truncated to 60 chars, or undefined if none. */
+function extractTitle(elements: any[]): string | undefined {
+  const candidates = elements
+    .filter((el) => el.type === "text" && el.text?.trim() && !el.containerId)
+    .sort((a, b) => (b.fontSize ?? 16) - (a.fontSize ?? 16));
+  if (candidates.length === 0) return undefined;
+  const text = candidates[0].text.trim().replace(/\n+/g, " ");
+  return text.length > 60 ? text.slice(0, 57) + "…" : text;
 }
 
 export class FileCheckpointStore implements CheckpointStore {
@@ -36,7 +51,9 @@ export class FileCheckpointStore implements CheckpointStore {
     validateCheckpointId(id);
     const serialized = JSON.stringify(data);
     if (serialized.length > MAX_CHECKPOINT_BYTES) {
-      throw new Error(`Checkpoint data exceeds ${MAX_CHECKPOINT_BYTES} byte limit`);
+      throw new Error(
+        `Checkpoint data exceeds ${MAX_CHECKPOINT_BYTES} byte limit`,
+      );
     }
     const filePath = path.join(this.dir, `${id}.json`);
     // Verify resolved path stays within checkpoint directory
@@ -55,25 +72,59 @@ export class FileCheckpointStore implements CheckpointStore {
     try {
       const raw = await fs.promises.readFile(filePath, "utf-8");
       return JSON.parse(raw);
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
+  async list(): Promise<{ id: string; mtime: number; title?: string }[]> {
+    try {
+      const entries = await fs.promises.readdir(this.dir);
+      const results = await Promise.all(
+        entries
+          .filter((f) => f.endsWith(".json"))
+          .map(async (f) => {
+            const filePath = path.join(this.dir, f);
+            const [stat, raw] = await Promise.all([
+              fs.promises.stat(filePath),
+              fs.promises.readFile(filePath, "utf-8").catch(() => null),
+            ]);
+            let title: string | undefined;
+            if (raw) {
+              try {
+                const data = JSON.parse(raw);
+                title = extractTitle(data.elements ?? []);
+              } catch {
+                /* ignore */
+              }
+            }
+            return { id: f.slice(0, -5), mtime: stat.mtimeMs, title };
+          }),
+      );
+      return results.sort((a, b) => b.mtime - a.mtime);
+    } catch {
+      return [];
+    }
+  }
+
   /** Remove oldest checkpoints when count exceeds the limit. */
   private async pruneOldCheckpoints(): Promise<void> {
     try {
       const entries = await fs.promises.readdir(this.dir);
-      const jsonFiles = entries.filter(f => f.endsWith(".json"));
+      const jsonFiles = entries.filter((f) => f.endsWith(".json"));
       if (jsonFiles.length <= MAX_FILE_CHECKPOINTS) return;
 
       const stats = await Promise.all(
-        jsonFiles.map(async f => ({
+        jsonFiles.map(async (f) => ({
           name: f,
           mtime: (await fs.promises.stat(path.join(this.dir, f))).mtimeMs,
-        }))
+        })),
       );
       stats.sort((a, b) => a.mtime - b.mtime);
       const toRemove = stats.slice(0, stats.length - MAX_FILE_CHECKPOINTS);
       await Promise.all(
-        toRemove.map(f => fs.promises.unlink(path.join(this.dir, f.name)).catch(() => {}))
+        toRemove.map((f) =>
+          fs.promises.unlink(path.join(this.dir, f.name)).catch(() => {}),
+        ),
       );
     } catch {
       // Best-effort cleanup; don't fail the save
@@ -87,7 +138,9 @@ export class MemoryCheckpointStore implements CheckpointStore {
     validateCheckpointId(id);
     const serialized = JSON.stringify(data);
     if (serialized.length > MAX_CHECKPOINT_BYTES) {
-      throw new Error(`Checkpoint data exceeds ${MAX_CHECKPOINT_BYTES} byte limit`);
+      throw new Error(
+        `Checkpoint data exceeds ${MAX_CHECKPOINT_BYTES} byte limit`,
+      );
     }
     memoryStore.set(id, serialized);
     // Evict oldest entries if over limit
@@ -100,7 +153,23 @@ export class MemoryCheckpointStore implements CheckpointStore {
     validateCheckpointId(id);
     const raw = memoryStore.get(id);
     if (!raw) return null;
-    try { return JSON.parse(raw); } catch { return null; }
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  async list(): Promise<{ id: string; mtime: number; title?: string }[]> {
+    return Array.from(memoryStore.keys()).map((id) => {
+      let title: string | undefined;
+      try {
+        const raw = memoryStore.get(id);
+        if (raw) title = extractTitle(JSON.parse(raw).elements ?? []);
+      } catch {
+        /* ignore */
+      }
+      return { id, mtime: Date.now(), title };
+    });
   }
 }
 
@@ -110,9 +179,14 @@ export class RedisCheckpointStore implements CheckpointStore {
   private async getRedis() {
     if (!this.redis) {
       const { Redis } = await import("@upstash/redis");
-      const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
-      const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
-      if (!url || !token) throw new Error("Missing Redis env vars (KV_REST_API_* or UPSTASH_REDIS_REST_*)");
+      const url =
+        process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
+      const token =
+        process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+      if (!url || !token)
+        throw new Error(
+          "Missing Redis env vars (KV_REST_API_* or UPSTASH_REDIS_REST_*)",
+        );
       this.redis = new Redis({ url, token });
     }
     return this.redis;
@@ -121,7 +195,9 @@ export class RedisCheckpointStore implements CheckpointStore {
     validateCheckpointId(id);
     const serialized = JSON.stringify(data);
     if (serialized.length > MAX_CHECKPOINT_BYTES) {
-      throw new Error(`Checkpoint data exceeds ${MAX_CHECKPOINT_BYTES} byte limit`);
+      throw new Error(
+        `Checkpoint data exceeds ${MAX_CHECKPOINT_BYTES} byte limit`,
+      );
     }
     const redis = await this.getRedis();
     await redis.set(`cp:${id}`, serialized, { ex: REDIS_TTL_SECONDS });
@@ -131,7 +207,21 @@ export class RedisCheckpointStore implements CheckpointStore {
     const redis = await this.getRedis();
     const raw = await redis.get(`cp:${id}`);
     if (!raw) return null;
-    try { return typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return null; }
+    try {
+      return typeof raw === "string" ? JSON.parse(raw) : raw;
+    } catch {
+      return null;
+    }
+  }
+  async list(): Promise<{ id: string; mtime: number; title?: string }[]> {
+    // Redis SCAN for cp:* keys — best-effort, not ordered by mtime
+    try {
+      const redis = await this.getRedis();
+      const keys: string[] = await redis.keys("cp:*");
+      return keys.map((k) => ({ id: k.slice(3), mtime: Date.now() }));
+    } catch {
+      return [];
+    }
   }
 }
 
