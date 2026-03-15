@@ -73,20 +73,30 @@ function convertRawElements(els: any[]): any[] {
   const pseudoTypes = new Set(["cameraUpdate", "delete", "restoreCheckpoint"]);
   const pseudos = els.filter((el: any) => pseudoTypes.has(el.type));
   const real = els.filter((el: any) => !pseudoTypes.has(el.type));
+  // Set fontFamily BEFORE conversion so convertToExcalidrawElements measures
+  // text with the correct font when auto-sizing containers. Changing fontFamily
+  // after the fact causes text to overflow since the box was sized for a different font.
+  const excalifont = (FONT_FAMILY as any).Excalifont ?? 1;
   const withDefaults = real.map((el: any) =>
     el.label
       ? {
           ...el,
-          label: { textAlign: "center", verticalAlign: "middle", ...el.label },
+          label: {
+            textAlign: "center",
+            verticalAlign: "middle",
+            fontFamily: excalifont,
+            ...el.label,
+          },
         }
+      : el.type === "text"
+      ? { ...el, fontFamily: el.fontFamily ?? excalifont }
       : el,
   );
   const converted = convertToExcalidrawElements(withDefaults, {
     regenerateIds: false,
   }).map((el: any) =>
-    el.type === "text"
-      ? { ...el, fontFamily: (FONT_FAMILY as any).Excalifont ?? 1 }
-      : el,
+    // Ensure any bound text elements that slipped through also get the right font
+    el.type === "text" ? { ...el, fontFamily: el.fontFamily ?? excalifont } : el,
   );
   return [...converted, ...pseudos];
 }
@@ -151,24 +161,6 @@ function extractViewportAndElements(elements: any[]): {
 
   return { viewport, drawElements: processedDraw, restoreId, deleteIds };
 }
-
-const ExpandIcon = () => (
-  <svg
-    width="14"
-    height="14"
-    viewBox="0 0 14 14"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="1.5"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <path d="M8.5 1.5H12.5V5.5" />
-    <path d="M5.5 12.5H1.5V8.5" />
-    <path d="M12.5 1.5L8 6" />
-    <path d="M1.5 12.5L6 8" />
-  </svg>
-);
 
 const ExternalLinkIcon = () => (
   <svg
@@ -1161,14 +1153,6 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
             </span>
           </button>
 
-          <button
-            className="app-button"
-            onClick={toggleFullscreen}
-            title="Enter fullscreen"
-          >
-            <span>Edit</span>
-            <ExpandIcon />
-          </button>
         </div>
       )}
       {/* Editor: mount hidden when ready, reveal after viewport is set */}
