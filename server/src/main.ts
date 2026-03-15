@@ -9,8 +9,12 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import cors from "cors";
+import express from "express";
 import type { Request, Response } from "express";
-import { FileCheckpointStore } from "./checkpoint-store.js";
+import {
+  FileCheckpointStore,
+  type CheckpointStore,
+} from "./checkpoint-store.js";
 import { createServer } from "./server.js";
 
 /**
@@ -20,11 +24,36 @@ import { createServer } from "./server.js";
  */
 export async function startStreamableHTTPServer(
   createServer: () => McpServer,
+  store: CheckpointStore,
 ): Promise<void> {
   const port = parseInt(process.env.PORT ?? "3001", 10);
 
   const app = createMcpExpressApp({ host: "0.0.0.0" });
   app.use(cors());
+  app.use(express.json());
+
+  // REST endpoints so the workspace page can read/write checkpoints
+  app.get("/checkpoint/:id", async (req: Request, res: Response) => {
+    try {
+      const data = await store.load(String(req.params.id));
+      if (!data) {
+        res.status(404).json({ error: "Not found" });
+        return;
+      }
+      res.json(data);
+    } catch (e) {
+      res.status(400).json({ error: String(e) });
+    }
+  });
+
+  app.put("/checkpoint/:id", async (req: Request, res: Response) => {
+    try {
+      await store.save(String(req.params.id), req.body);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(400).json({ error: String(e) });
+    }
+  });
 
   app.all("/mcp", async (req: Request, res: Response) => {
     const server = createServer();
@@ -86,7 +115,7 @@ async function main() {
   if (process.argv.includes("--stdio")) {
     await startStdioServer(factory);
   } else {
-    await startStreamableHTTPServer(factory);
+    await startStreamableHTTPServer(factory, store);
   }
 }
 

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { useApp } from "@modelcontextprotocol/ext-apps/react";
 import type { App } from "@modelcontextprotocol/ext-apps";
 import {
@@ -183,6 +184,23 @@ const ExternalLinkIcon = () => (
     <path d="M12 8.667V12.667C12 13.035 11.702 13.333 11.333 13.333H3.333C2.965 13.333 2.667 13.035 2.667 12.667V4.667C2.667 4.298 2.965 4 3.333 4H7.333" />
     <path d="M10 2.667H13.333V6" />
     <path d="M6.667 9.333L13.333 2.667" />
+  </svg>
+);
+
+const WorkspaceIcon = () => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.25"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <rect x="1.5" y="1.5" width="13" height="10" rx="1.5" />
+    <path d="M5.5 14.5h5" />
+    <path d="M8 11.5v3" />
   </svg>
 );
 
@@ -1115,6 +1133,33 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
               );
             }}
           />
+
+          <button
+            className="app-button"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              width: "auto",
+              padding: "0 10px",
+            }}
+            title="Open in Workspace to edit"
+            disabled={!checkpointIdRef.current}
+            onClick={() => {
+              const cpId = checkpointIdRef.current;
+              if (cpId) {
+                window.parent.postMessage(
+                  { type: "excalidraw-workspace", checkpointId: cpId },
+                  "*",
+                );
+              }
+            }}
+          >
+            <WorkspaceIcon />
+            <span style={{ fontSize: "0.75rem", fontWeight: 400 }}>
+              Workspace
+            </span>
+          </button>
 
           <button
             className="app-button"
