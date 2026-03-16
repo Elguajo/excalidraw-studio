@@ -2,6 +2,7 @@
 
 import "@excalidraw/excalidraw/index.css";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 
@@ -52,7 +53,17 @@ export default function WorkspacePage() {
         return r.json() as Promise<{ elements: ExcalidrawElement[] }>;
       })
       .then((data) => {
-        setInitialElements(data.elements ?? []);
+        // Normalize elements: Excalidraw crashes if array fields like
+        // boundElements, groupIds, or points are null instead of []
+        const raw: ExcalidrawElement[] = data.elements ?? [];
+        const normalized = raw
+          .filter((el) => el != null && el.id && el.type)
+          .map((el) => ({
+            ...el,
+            boundElements: el.boundElements ?? [],
+            groupIds: (el as any).groupIds ?? [],
+          }));
+        setInitialElements(normalized);
         setLoading(false);
       })
       .catch((e: Error) => {
@@ -81,7 +92,7 @@ export default function WorkspacePage() {
       <header className="flex items-center gap-3 px-4 py-3 border-b border-gray-100 shrink-0 z-10">
         <button
           onClick={() => router.push("/")}
-          className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-900 transition-colors px-2.5 py-1.5 rounded-md hover:bg-gray-50 border border-transparent hover:border-gray-200"
+          className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-900 transition-colors px-2.5 py-1.5 rounded-md hover:bg-gray-50 border border-transparent hover:border-gray-200 cursor-pointer"
         >
           <svg
             width="13"
@@ -114,32 +125,55 @@ export default function WorkspacePage() {
             {id}
           </span>
         </div>
-        <span
-          className={`flex items-center gap-1 text-xs font-medium transition-colors shrink-0 ${saved ? "text-emerald-500" : "text-gray-400"}`}
-        >
-          {saved ? (
-            <>
-              <svg
-                width="10"
-                height="10"
-                viewBox="0 0 10 10"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M2 5l2.5 2.5L8 2.5" />
-              </svg>
-              Saved
-            </>
-          ) : (
-            <>
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />
-              Unsaved
-            </>
-          )}
-        </span>
+        <div className="flex items-center gap-3 shrink-0">
+          <span
+            className={`flex items-center gap-1 text-xs font-medium transition-colors ${saved ? "text-emerald-500" : "text-gray-400"}`}
+          >
+            {saved ? (
+              <>
+                <svg
+                  width="10"
+                  height="10"
+                  viewBox="0 0 10 10"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M2 5l2.5 2.5L8 2.5" />
+                </svg>
+                Saved
+              </>
+            ) : (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />
+                Unsaved
+              </>
+            )}
+          </span>
+          <div className="w-px h-4 bg-gray-200" />
+          <Link
+            href="/workspaces"
+            className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-900 transition-colors px-2.5 py-1.5 rounded-md hover:bg-gray-50 border border-transparent hover:border-gray-200 cursor-pointer"
+          >
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            >
+              <rect x="3" y="3" width="7" height="7" rx="1" />
+              <rect x="14" y="3" width="7" height="7" rx="1" />
+              <rect x="3" y="14" width="7" height="7" rx="1" />
+              <rect x="14" y="14" width="7" height="7" rx="1" />
+            </svg>
+            Workspaces
+          </Link>
+        </div>
       </header>
       <div className="flex-1 relative min-h-0">
         {loading && <LoadingCanvas />}
@@ -161,7 +195,10 @@ export default function WorkspacePage() {
         )}
         {!loading && !error && initialElements !== null && (
           <Excalidraw
-            initialData={{ elements: initialElements, scrollToContent: true }}
+            initialData={{
+              elements: initialElements,
+              scrollToContent: initialElements.length > 0,
+            }}
             onChange={handleChange}
             theme="light"
           />
