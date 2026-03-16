@@ -2,15 +2,114 @@
 
 import { CopilotChat } from "@copilotkit/react-core/v2";
 import Link from "next/link";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+
+const CARDS = [
+  {
+    icon: (
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+      >
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      </svg>
+    ),
+    title: "Just describe it",
+    desc: "Plain English → diagram in seconds, no design tools needed",
+  },
+  {
+    icon: (
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+      >
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+      </svg>
+    ),
+    title: "Fully editable",
+    desc: "Every result opens in Excalidraw - drag, reshape, annotate freely",
+  },
+  {
+    icon: (
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+      >
+        <rect x="3" y="3" width="7" height="7" rx="1" />
+        <rect x="14" y="3" width="7" height="7" rx="1" />
+        <rect x="3" y="14" width="7" height="7" rx="1" />
+        <rect x="14" y="14" width="7" height="7" rx="1" />
+      </svg>
+    ),
+    title: "Saved workspaces",
+    desc: "All diagrams are stored and ready to revisit or share anytime",
+  },
+];
 
 const SUGGESTIONS = [
   "Draw a microservices architecture",
-  "Draw a user auth flow diagram",
   "Sketch a CI/CD pipeline",
-  "Draw a sequence diagram of an API call",
-  "Draw a system design for a URL shortener",
+  "Draw a user auth flow",
 ];
+
+const PORTAL_ID = "excalidraw-welcome-portal";
+
+function WelcomePortal({ children }: { children: React.ReactNode }) {
+  const [target, setTarget] = useState<HTMLElement | null>(null);
+
+  useEffect(() => {
+    function tryAttach() {
+      const welcome = document.querySelector(
+        '[data-testid="copilot-welcome-screen"]',
+      );
+      if (!welcome) return;
+      let portal = document.getElementById(PORTAL_ID);
+      if (!portal) {
+        portal = document.createElement("div");
+        portal.id = PORTAL_ID;
+        welcome.appendChild(portal);
+      }
+      setTarget(portal);
+    }
+
+    tryAttach();
+
+    const observer = new MutationObserver(() => {
+      const welcome = document.querySelector(
+        '[data-testid="copilot-welcome-screen"]',
+      );
+      if (!welcome) {
+        document.getElementById(PORTAL_ID)?.remove();
+        setTarget(null);
+      } else if (!document.getElementById(PORTAL_ID)) {
+        tryAttach();
+      }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+
+  if (!target) return null;
+  return createPortal(children, target);
+}
 
 export default function Home() {
   useEffect(() => {
@@ -59,50 +158,80 @@ export default function Home() {
             </svg>
             Workspaces
           </Link>
-          <span className="text-sm text-gray-400 font-medium bg-gray-50 border border-gray-100 px-3 py-1 rounded-full">
+          <span className="text-sm text-gray-400 font-medium bg-gray-50 border border-gray-100 px-3 py-1 rounded-full select-none">
             AI Diagrams
           </span>
         </div>
       </nav>
-      <div className="flex-1 flex justify-center overflow-hidden min-h-0">
+      <div className="flex-1 flex justify-center overflow-hidden min-h-0 pt-28">
         <div className="w-full max-w-2xl h-full flex flex-col">
           <CopilotChat
             className="flex-1 min-h-0"
             labels={{
-              welcomeMessageText: "Describe any diagram and I will draw it",
-              chatInputPlaceholder: "Describe a diagram...",
+              welcomeMessageText: "Describe anything and I will draw it",
+              chatInputPlaceholder:
+                "Describe an architecture, flow, or sequence diagram…",
               chatDisclaimerText: "",
             }}
           />
-          <div className="flex flex-wrap gap-2 px-4 pb-3 shrink-0">
-            {SUGGESTIONS.map((s) => (
-              <button
-                key={s}
-                className="text-xs text-gray-500 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-full px-3 py-1.5 transition-colors cursor-pointer"
-                onClick={() => {
-                  const input = document.querySelector<
-                    HTMLTextAreaElement | HTMLInputElement
-                  >("textarea, input[type='text']");
-                  if (input) {
-                    const nativeInputValueSetter =
-                      Object.getOwnPropertyDescriptor(
-                        window.HTMLTextAreaElement.prototype,
-                        "value",
-                      )?.set ??
-                      Object.getOwnPropertyDescriptor(
-                        window.HTMLInputElement.prototype,
-                        "value",
-                      )?.set;
-                    nativeInputValueSetter?.call(input, s);
-                    input.dispatchEvent(new Event("input", { bubbles: true }));
-                    input.focus();
-                  }
-                }}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
+          <WelcomePortal>
+            <div className="grid grid-cols-3 gap-2.5 px-6 pt-3 pb-1">
+              {CARDS.map(({ icon, title, desc }) => (
+                <div
+                  key={title}
+                  className="flex items-start gap-2.5 p-3 rounded-xl border border-gray-100"
+                >
+                  <div className="w-7 h-7 rounded-lg bg-[#6965db]/10 text-[#6965db] flex items-center justify-center shrink-0 mt-0.5">
+                    {icon}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-gray-800 leading-snug">
+                      {title}
+                    </p>
+                    <p className="text-xs text-gray-400 leading-snug mt-0.5">
+                      {desc}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="pt-6 pb-4 flex flex-col items-center gap-2">
+              <p className="text-[11px] font-medium text-gray-500 tracking-wider select-none">
+                Try these Prompts
+              </p>
+              <div className="flex items-center gap-4">
+                {SUGGESTIONS.map((s) => (
+                  <button
+                    key={s}
+                    className="text-xs text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-full px-3 py-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                    onClick={() => {
+                      const input = document.querySelector<
+                        HTMLTextAreaElement | HTMLInputElement
+                      >("textarea, input[type='text']");
+                      if (input) {
+                        const nativeInputValueSetter =
+                          Object.getOwnPropertyDescriptor(
+                            window.HTMLTextAreaElement.prototype,
+                            "value",
+                          )?.set ??
+                          Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype,
+                            "value",
+                          )?.set;
+                        nativeInputValueSetter?.call(input, s);
+                        input.dispatchEvent(
+                          new Event("input", { bubbles: true }),
+                        );
+                        input.focus();
+                      }
+                    }}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </WelcomePortal>
         </div>
       </div>
     </main>
