@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 interface CheckpointEntry {
@@ -30,6 +30,91 @@ const ExcalidrawLogo = () => (
   </svg>
 );
 
+function TitleCell({
+  id,
+  initialTitle,
+  onSave,
+}: {
+  id: string;
+  initialTitle?: string;
+  onSave: (id: string, title: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(initialTitle ?? "");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function startEdit(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setValue(initialTitle ?? "");
+    setEditing(true);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }
+
+  async function commit() {
+    setEditing(false);
+    const trimmed = value.trim();
+    if (trimmed === (initialTitle ?? "")) return;
+    onSave(id, trimmed);
+    await fetch(`/api/checkpoint/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: trimmed }),
+    });
+  }
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") commit();
+    if (e.key === "Escape") setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        className="text-[15px] font-medium text-gray-800 bg-white border border-[#6965db]/40 rounded px-1 py-0 w-full outline-none focus:border-[#6965db]"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={onKeyDown}
+        onClick={(e) => e.stopPropagation()}
+        placeholder="Untitled diagram"
+      />
+    );
+  }
+
+  return (
+    <button
+      onClick={startEdit}
+      title="Click to rename"
+      className="flex items-center gap-1 text-left max-w-full cursor-pointer"
+    >
+      {initialTitle ? (
+        <span className="text-[15px] font-medium text-gray-800 truncate">
+          {initialTitle}
+        </span>
+      ) : (
+        <span className="text-[15px] text-gray-400 italic">
+          Untitled diagram
+        </span>
+      )}
+      <svg
+        className="shrink-0 text-gray-400"
+        width="13"
+        height="13"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      >
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+      </svg>
+    </button>
+  );
+}
+
 export default function WorkspacesPage() {
   const router = useRouter();
   const [entries, setEntries] = useState<CheckpointEntry[] | null>(null);
@@ -41,24 +126,58 @@ export default function WorkspacesPage() {
       .catch(() => setEntries([]));
   }, []);
 
+  function handleDelete(id: string, e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setEntries((prev) => prev?.filter((entry) => entry.id !== id) ?? prev);
+    fetch(`/api/checkpoint/${id}`, { method: "DELETE" }).catch(() => {});
+  }
+
+  function handleTitleSave(id: string, title: string) {
+    setEntries(
+      (prev) =>
+        prev?.map((entry) =>
+          entry.id === id ? { ...entry, title: title || undefined } : entry,
+        ) ?? prev,
+    );
+    // mtime intentionally NOT updated — renaming doesn't change diagram age
+  }
+
   return (
     <div className="min-h-screen bg-white flex flex-col">
       <nav className="flex items-center justify-between px-6 py-3 border-b border-gray-100 shrink-0">
-        <div className="flex items-center gap-2 select-none">
+        <Link
+          href="/"
+          className="flex items-center gap-2 select-none cursor-pointer"
+        >
           <ExcalidrawLogo />
           <span className="font-semibold text-gray-900 text-base tracking-tight">
             Excalidraw <span className="text-gray-400 font-light mx-1">×</span>{" "}
             CopilotKit
           </span>
-        </div>
+        </Link>
         <div className="flex items-center gap-4">
           <Link
             href="/"
-            className="text-sm text-gray-500 hover:text-gray-900 transition-colors font-medium"
+            className="text-sm text-gray-500 hover:text-gray-900 transition-colors font-medium cursor-pointer"
           >
             ← Chat
           </Link>
-          <span className="text-sm text-gray-400 font-medium bg-gray-50 border border-gray-100 px-2 py-1 rounded-full">
+          <span className="flex items-center gap-1.5 text-sm text-gray-400 font-medium bg-gray-50 border border-gray-100 px-2.5 py-1.5 rounded-full">
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            >
+              <rect x="3" y="3" width="7" height="7" rx="1" />
+              <rect x="14" y="3" width="7" height="7" rx="1" />
+              <rect x="3" y="14" width="7" height="7" rx="1" />
+              <rect x="14" y="14" width="7" height="7" rx="1" />
+            </svg>
             Workspaces
           </span>
         </div>
@@ -70,7 +189,7 @@ export default function WorkspacesPage() {
           </h1>
           <button
             onClick={() => router.push("/")}
-            className="text-xs text-[#6965db] hover:text-[#5b57d1] font-medium transition-colors"
+            className="text-xs text-[#6965db] hover:text-[#5b57d1] font-medium transition-colors cursor-pointer"
           >
             + New diagram
           </button>
@@ -114,59 +233,66 @@ export default function WorkspacesPage() {
         {entries !== null && entries.length > 0 && (
           <div className="grid gap-2">
             {entries.map(({ id, mtime, title }) => (
-              <Link
+              <div
                 key={id}
-                href={`/workspace/${id}`}
-                className="flex items-center justify-between px-4 py-3 rounded-lg border border-gray-100 hover:border-[#6965db]/30 hover:bg-[#6965db]/3 transition-colors group"
+                className="relative flex items-center gap-4 px-5 py-4 rounded-lg border border-gray-100 hover:border-[#6965db]/30 hover:bg-[#6965db]/[0.03] transition-colors"
               >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-8 h-8 rounded-md bg-[#6965db]/10 flex items-center justify-center shrink-0">
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="#6965db"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                    >
-                      <rect x="3" y="3" width="18" height="18" rx="2" />
-                      <path d="M8 12l3 3 5-5" />
-                    </svg>
-                  </div>
-                  <div className="min-w-0">
-                    {title ? (
-                      <p className="text-sm font-medium text-gray-800 truncate">
-                        {title}
-                      </p>
-                    ) : (
-                      <p className="text-sm text-gray-400 italic">
-                        Untitled diagram
-                      </p>
-                    )}
-                    <p className="text-[11px] font-mono text-gray-400 truncate">
-                      {id}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 shrink-0">
-                  <span className="text-xs text-gray-400">
-                    {formatDate(mtime)}
-                  </span>
+                <Link
+                  href={`/workspace/${id}`}
+                  className="absolute inset-0 rounded-lg"
+                  aria-label={`Open ${title ?? id}`}
+                />
+                <div className="relative z-10 w-10 h-10 rounded-md bg-[#6965db]/10 flex items-center justify-center shrink-0">
                   <svg
-                    className="opacity-0 group-hover:opacity-100 transition-opacity"
-                    width="12"
-                    height="12"
-                    viewBox="0 0 12 12"
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
                     fill="none"
-                    stroke="currentColor"
+                    stroke="#6965db"
                     strokeWidth="1.5"
                     strokeLinecap="round"
                   >
-                    <path d="M4.5 1.5L9 6l-4.5 4.5" />
+                    <rect x="3" y="3" width="18" height="18" rx="2" />
+                    <path d="M8 12l3 3 5-5" />
                   </svg>
                 </div>
-              </Link>
+                <div className="relative z-10 flex-1 min-w-0">
+                  <TitleCell
+                    id={id}
+                    initialTitle={title}
+                    onSave={handleTitleSave}
+                  />
+                  <p className="text-xs font-mono text-gray-400 truncate mt-0.5">
+                    {id}
+                  </p>
+                </div>
+                <div className="relative z-10 flex flex-col items-end gap-1 shrink-0">
+                  <span className="text-sm text-gray-400">
+                    {formatDate(mtime)}
+                  </span>
+                  <button
+                    onClick={(e) => handleDelete(id, e)}
+                    title="Delete diagram"
+                    className="text-gray-400 hover:text-red-400 transition-colors cursor-pointer"
+                  >
+                    <svg
+                      width="15"
+                      height="15"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                      <path d="M10 11v6M14 11v6" />
+                      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
             ))}
           </div>
         )}

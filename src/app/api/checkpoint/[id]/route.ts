@@ -27,3 +27,26 @@ export async function PUT(
   });
   return NextResponse.json(await res.json());
 }
+
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const body = await req.json();
+  const res = await fetch(`${MCP_BASE}/checkpoint/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return NextResponse.json(await res.json());
+}
+
+export async function DELETE(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const res = await fetch(`${MCP_BASE}/checkpoint/${id}`, { method: "DELETE" });
+  return NextResponse.json(await res.json());
+}
