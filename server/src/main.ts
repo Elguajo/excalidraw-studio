@@ -57,7 +57,35 @@ export async function startStreamableHTTPServer(
 
   app.put("/checkpoint/:id", async (req: Request, res: Response) => {
     try {
-      await store.save(String(req.params.id), req.body);
+      const id = String(req.params.id);
+      // Merge with existing to preserve title when workspace saves elements only.
+      // Always refresh _mtime so title-only PATCHes don't affect the diagram timestamp.
+      const existing = await store.load(id);
+      const merged = existing
+        ? { ...existing, ...req.body, _mtime: Date.now() }
+        : { ...req.body, _mtime: Date.now() };
+      await store.save(id, merged);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(400).json({ error: String(e) });
+    }
+  });
+
+  app.patch("/checkpoint/:id", async (req: Request, res: Response) => {
+    try {
+      const id = String(req.params.id);
+      const existing = await store.load(id);
+      if (!existing) { res.status(404).json({ error: "Not found" }); return; }
+      await store.save(id, { ...existing, title: req.body.title ?? existing.title });
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(400).json({ error: String(e) });
+    }
+  });
+
+  app.delete("/checkpoint/:id", async (req: Request, res: Response) => {
+    try {
+      await store.delete(String(req.params.id));
       res.json({ ok: true });
     } catch (e) {
       res.status(400).json({ error: String(e) });

@@ -24,9 +24,10 @@ function validateCheckpointId(id: string): void {
 }
 
 export interface CheckpointStore {
-  save(id: string, data: { elements: any[] }): Promise<void>;
-  load(id: string): Promise<{ elements: any[] } | null>;
+  save(id: string, data: { elements: any[]; title?: string }): Promise<void>;
+  load(id: string): Promise<{ elements: any[]; title?: string } | null>;
   list(): Promise<{ id: string; mtime: number; title?: string }[]>;
+  delete(id: string): Promise<void>;
 }
 
 /** Extract a human-readable title from a diagram's elements array.
@@ -47,7 +48,7 @@ export class FileCheckpointStore implements CheckpointStore {
     this.dir = path.join(os.tmpdir(), "excalidraw-mcp-checkpoints");
     fs.mkdirSync(this.dir, { recursive: true });
   }
-  async save(id: string, data: { elements: any[] }): Promise<void> {
+  async save(id: string, data: { elements: any[]; title?: string }): Promise<void> {
     validateCheckpointId(id);
     const serialized = JSON.stringify(data);
     if (serialized.length > MAX_CHECKPOINT_BYTES) {
@@ -89,21 +90,32 @@ export class FileCheckpointStore implements CheckpointStore {
               fs.promises.readFile(filePath, "utf-8").catch(() => null),
             ]);
             let title: string | undefined;
+            let mtime = stat.mtimeMs;
             if (raw) {
               try {
                 const data = JSON.parse(raw);
-                title = extractTitle(data.elements ?? []);
+                title = data.title || extractTitle(data.elements ?? []);
+                if (typeof data._mtime === "number") mtime = data._mtime;
               } catch {
                 /* ignore */
               }
             }
-            return { id: f.slice(0, -5), mtime: stat.mtimeMs, title };
+            return { id: f.slice(0, -5), mtime, title };
           }),
       );
       return results.sort((a, b) => b.mtime - a.mtime);
     } catch {
       return [];
     }
+  }
+
+  async delete(id: string): Promise<void> {
+    validateCheckpointId(id);
+    const filePath = path.join(this.dir, `${id}.json`);
+    if (!path.resolve(filePath).startsWith(path.resolve(this.dir) + path.sep)) {
+      throw new Error("Invalid checkpoint path");
+    }
+    await fs.promises.unlink(filePath).catch(() => {});
   }
 
   /** Remove oldest checkpoints when count exceeds the limit. */
@@ -134,7 +146,7 @@ export class FileCheckpointStore implements CheckpointStore {
 
 const memoryStore = new Map<string, string>();
 export class MemoryCheckpointStore implements CheckpointStore {
-  async save(id: string, data: { elements: any[] }): Promise<void> {
+  async save(id: string, data: { elements: any[]; title?: string }): Promise<void> {
     validateCheckpointId(id);
     const serialized = JSON.stringify(data);
     if (serialized.length > MAX_CHECKPOINT_BYTES) {
@@ -159,16 +171,25 @@ export class MemoryCheckpointStore implements CheckpointStore {
       return null;
     }
   }
+  async delete(id: string): Promise<void> {
+    validateCheckpointId(id);
+    memoryStore.delete(id);
+  }
   async list(): Promise<{ id: string; mtime: number; title?: string }[]> {
     return Array.from(memoryStore.keys()).map((id) => {
       let title: string | undefined;
       try {
         const raw = memoryStore.get(id);
-        if (raw) title = extractTitle(JSON.parse(raw).elements ?? []);
+        if (raw) { const d = JSON.parse(raw); title = d.title || extractTitle(d.elements ?? []); }
       } catch {
         /* ignore */
       }
-      return { id, mtime: Date.now(), title };
+      let mtime = Date.now();
+      try {
+        const raw = memoryStore.get(id);
+        if (raw) { const d2 = JSON.parse(raw); if (typeof d2._mtime === "number") mtime = d2._mtime; }
+      } catch { /* ignore */ }
+      return { id, mtime, title };
     });
   }
 }
@@ -191,7 +212,7 @@ export class RedisCheckpointStore implements CheckpointStore {
     }
     return this.redis;
   }
-  async save(id: string, data: { elements: any[] }): Promise<void> {
+  async save(id: string, data: { elements: any[]; title?: string }): Promise<void> {
     validateCheckpointId(id);
     const serialized = JSON.stringify(data);
     if (serialized.length > MAX_CHECKPOINT_BYTES) {
@@ -212,6 +233,11 @@ export class RedisCheckpointStore implements CheckpointStore {
     } catch {
       return null;
     }
+  }
+  async delete(id: string): Promise<void> {
+    validateCheckpointId(id);
+    const redis = await this.getRedis();
+    await redis.del(`cp:${id}`);
   }
   async list(): Promise<{ id: string; mtime: number; title?: string }[]> {
     // Redis SCAN for cp:* keys — best-effort, not ordered by mtime
