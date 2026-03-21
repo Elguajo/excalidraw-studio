@@ -136,7 +136,15 @@ export default function WorkspacePage() {
           0,
         );
         setInitialElements(converted);
-        const t = data.title ?? "";
+        const extractTitle = (els: any[]) => {
+          const candidates = els
+            .filter((el: any) => el.type === "text" && el.text?.trim() && !el.containerId)
+            .sort((a: any, b: any) => (b.fontSize ?? 16) - (a.fontSize ?? 16));
+          if (!candidates.length) return "";
+          const text = candidates[0].text.trim().replace(/\n+/g, " ");
+          return text.length > 60 ? text.slice(0, 57) + "…" : text;
+        };
+        const t = data.title || extractTitle(raw) || "";
         setTitle(t);
         if (normalized.length === 0 && (!t || t === "Untitled")) {
           setEditingTitle(true);
