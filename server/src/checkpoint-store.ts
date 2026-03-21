@@ -24,8 +24,23 @@ function validateCheckpointId(id: string): void {
 }
 
 export interface CheckpointStore {
-  save(id: string, data: { elements: any[]; title?: string; _mtime?: number; [key: string]: any }): Promise<void>;
-  load(id: string): Promise<{ elements: any[]; title?: string; _mtime?: number; [key: string]: any } | null>;
+  save(
+    id: string,
+    data: {
+      elements: any[];
+      title?: string;
+      _mtime?: number;
+      [key: string]: any;
+    },
+  ): Promise<void>;
+  load(
+    id: string,
+  ): Promise<{
+    elements: any[];
+    title?: string;
+    _mtime?: number;
+    [key: string]: any;
+  } | null>;
   list(): Promise<{ id: string; mtime: number; title?: string }[]>;
   delete(id: string): Promise<void>;
 }
@@ -45,10 +60,13 @@ function extractTitle(elements: any[]): string | undefined {
 export class FileCheckpointStore implements CheckpointStore {
   private dir: string;
   constructor() {
-    this.dir = path.join(os.tmpdir(), "excalidraw-mcp-checkpoints");
+    this.dir = path.join(os.homedir(), ".excalidraw-local", "checkpoints");
     fs.mkdirSync(this.dir, { recursive: true });
   }
-  async save(id: string, data: { elements: any[]; title?: string }): Promise<void> {
+  async save(
+    id: string,
+    data: { elements: any[]; title?: string },
+  ): Promise<void> {
     validateCheckpointId(id);
     const serialized = JSON.stringify(data);
     if (serialized.length > MAX_CHECKPOINT_BYTES) {
@@ -146,7 +164,10 @@ export class FileCheckpointStore implements CheckpointStore {
 
 const memoryStore = new Map<string, string>();
 export class MemoryCheckpointStore implements CheckpointStore {
-  async save(id: string, data: { elements: any[]; title?: string }): Promise<void> {
+  async save(
+    id: string,
+    data: { elements: any[]; title?: string },
+  ): Promise<void> {
     validateCheckpointId(id);
     const serialized = JSON.stringify(data);
     if (serialized.length > MAX_CHECKPOINT_BYTES) {
@@ -180,15 +201,23 @@ export class MemoryCheckpointStore implements CheckpointStore {
       let title: string | undefined;
       try {
         const raw = memoryStore.get(id);
-        if (raw) { const d = JSON.parse(raw); title = d.title || extractTitle(d.elements ?? []); }
+        if (raw) {
+          const d = JSON.parse(raw);
+          title = d.title || extractTitle(d.elements ?? []);
+        }
       } catch {
         /* ignore */
       }
       let mtime = Date.now();
       try {
         const raw = memoryStore.get(id);
-        if (raw) { const d2 = JSON.parse(raw); if (typeof d2._mtime === "number") mtime = d2._mtime; }
-      } catch { /* ignore */ }
+        if (raw) {
+          const d2 = JSON.parse(raw);
+          if (typeof d2._mtime === "number") mtime = d2._mtime;
+        }
+      } catch {
+        /* ignore */
+      }
       return { id, mtime, title };
     });
   }
@@ -212,7 +241,10 @@ export class RedisCheckpointStore implements CheckpointStore {
     }
     return this.redis;
   }
-  async save(id: string, data: { elements: any[]; title?: string }): Promise<void> {
+  async save(
+    id: string,
+    data: { elements: any[]; title?: string },
+  ): Promise<void> {
     validateCheckpointId(id);
     const serialized = JSON.stringify(data);
     if (serialized.length > MAX_CHECKPOINT_BYTES) {
