@@ -113,9 +113,14 @@ export default function WorkspacePage() {
         return r.json() as Promise<{
           elements: ExcalidrawElement[];
           title?: string;
+          redirectTo?: string;
         }>;
       })
       .then(async (data) => {
+        if (data.redirectTo) {
+          router.replace(`/workspace/${data.redirectTo}`);
+          return;
+        }
         const raw: ExcalidrawElement[] = data.elements ?? [];
         const normalized = raw
           .filter((el) => el != null && el.id && el.type)

@@ -290,6 +290,14 @@ Every create_view call returns a \`checkpointId\` in its response. To continue f
 
 The saved state (including any user edits made in fullscreen) is loaded from the client, and your new elements are appended on top. This saves tokens — you don't need to re-send the entire diagram.
 
+## Updating an existing workspace (replace mode)
+
+If the user context includes a \`checkpointId\` and \`mode: "replace"\`, pass that \`checkpointId\` as the second argument to \`create_view\` to overwrite the original workspace in place:
+
+\`create_view({ elements: "[{\"type\":\"restoreCheckpoint\",\"id\":\"<id>\"}, ...]", checkpointId: "<id>" })\`
+
+If \`mode\` is \`"new"\` or not set, omit \`checkpointId\` and a new workspace will be created.
+
 ## Deleting Elements
 
 Remove elements by id using the \`delete\` pseudo-element:
@@ -493,9 +501,10 @@ Call read_me first to learn the element format.`,
         : "";
 
       const checkpointId = crypto.randomUUID().replace(/-/g, "").slice(0, 18);
-      await store.save(checkpointId, { elements: resolvedElements });
+      await store.save(checkpointId, { elements: resolvedElements, _mtime: Date.now() });
       return {
         content: [{ type: "text", text: `Diagram displayed! Checkpoint id: "${checkpointId}".
+IMPORTANT: Now call update_session_workspace({ newCheckpointId: "${checkpointId}" }) immediately.
 If user asks to create a new diagram - simply create a new one from scratch.
 However, if the user wants to edit something on this diagram "${checkpointId}", take these steps:
 1) read widget context (using read_widget_context tool) to check if user made any manual edits first

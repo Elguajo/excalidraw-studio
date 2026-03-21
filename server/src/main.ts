@@ -55,7 +55,7 @@ export async function startStreamableHTTPServer(
       const visible = await Promise.all(
         list.map(async (item) => {
           const data = await store.load(item.id);
-          return data?.deleted ? null : item;
+          return data?.deleted || data?.redirectTo ? null : item;
         }),
       );
       res.json(visible.filter(Boolean));
@@ -118,12 +118,18 @@ export async function startStreamableHTTPServer(
   app.delete("/checkpoint/:id", async (req: Request, res: Response) => {
     try {
       const id = String(req.params.id);
+      if (req.query.hard === "true") {
+        // Hard delete - used for temp checkpoints created during session replace
+        await store.delete(id);
+        res.json({ ok: true });
+        return;
+      }
       const existing = await store.load(id);
       if (!existing) {
         res.status(404).json({ error: "Not found" });
         return;
       }
-      // Soft delete - keeps elements so direct links still work
+      // Soft delete — keeps elements so direct links still work
       await store.save(id, { ...existing, deleted: true });
       res.json({ ok: true });
     } catch (e) {

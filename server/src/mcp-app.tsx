@@ -1095,6 +1095,11 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
           setElements(persisted);
           setUserEdits(persisted);
         }
+        // Notify parent page so it can replace the session workspace
+        window.parent.postMessage(
+          { type: "excalidraw-diagram-ready", checkpointId: cpId },
+          "*",
+        );
       }
     };
 
