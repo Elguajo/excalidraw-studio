@@ -9,6 +9,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import cors from "cors";
+import crypto from "node:crypto";
 import express from "express";
 import type { Request, Response } from "express";
 import {
@@ -33,6 +34,16 @@ export async function startStreamableHTTPServer(
   app.use(express.json());
 
   // REST endpoints so the workspace page can read/write checkpoints
+  app.post("/checkpoint", async (req: Request, res: Response) => {
+    try {
+      const id = crypto.randomUUID().replace(/-/g, "").slice(0, 18);
+      await store.save(id, { elements: [], title: req.body?.title ?? "Untitled", _mtime: Date.now() });
+      res.json({ id });
+    } catch (e) {
+      res.status(400).json({ error: String(e) });
+    }
+  });
+
   app.get("/checkpoints", async (_req: Request, res: Response) => {
     try {
       const list = await store.list();

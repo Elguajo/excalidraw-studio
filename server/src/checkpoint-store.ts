@@ -24,8 +24,8 @@ function validateCheckpointId(id: string): void {
 }
 
 export interface CheckpointStore {
-  save(id: string, data: { elements: any[]; title?: string }): Promise<void>;
-  load(id: string): Promise<{ elements: any[]; title?: string } | null>;
+  save(id: string, data: { elements: any[]; title?: string; _mtime?: number; [key: string]: any }): Promise<void>;
+  load(id: string): Promise<{ elements: any[]; title?: string; _mtime?: number; [key: string]: any } | null>;
   list(): Promise<{ id: string; mtime: number; title?: string }[]>;
   delete(id: string): Promise<void>;
 }
