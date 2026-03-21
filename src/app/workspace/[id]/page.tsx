@@ -14,9 +14,15 @@ const Excalidraw = dynamic(
   { ssr: false, loading: () => <LoadingCanvas /> },
 );
 
-async function convertWithFonts(
+// Only runs convertToExcalidrawElements when elements still have label shorthand
+// (not yet converted). Saved checkpoints are already fully converted by the
+// server, so running this again shifts text positions -- avoid it for those
+async function prepareElements(
   normalized: any[],
 ): Promise<ExcalidrawElement[]> {
+  const hasLabels = normalized.some((el: any) => el.label != null);
+  if (!hasLabels) return normalized as ExcalidrawElement[];
+
   const { convertToExcalidrawElements, FONT_FAMILY } =
     await import("@excalidraw/excalidraw");
   const excalifont = (FONT_FAMILY as any).Excalifont ?? 1;
@@ -74,9 +80,14 @@ export default function WorkspacePage() {
   >(null);
   const [excalidrawAPI, setExcalidrawAPI] = useState<any>(null);
   const rawNormalizedRef = useRef<any[] | null>(null);
+  const suppressOnChangeRef = useRef(false);
+  const savedVersionSumRef = useRef(0);
+  const currentElementsRef = useRef<readonly ExcalidrawElement[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">(
+    "unsaved",
+  );
   const [title, setTitle] = useState<string>("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -85,8 +96,20 @@ export default function WorkspacePage() {
 
   useEffect(() => {
     fetch(`/api/checkpoint/${id}`)
-      .then((r) => {
-        if (!r.ok) throw new Error("Checkpoint not found");
+      .then(async (r) => {
+        if (r.status === 404) {
+          // Workspace was deleted — recreate it with the same ID so links still work
+          await fetch(`/api/checkpoint/${id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ elements: [], title: "Untitled" }),
+          });
+          return { elements: [], title: "Untitled" } as {
+            elements: ExcalidrawElement[];
+            title?: string;
+          };
+        }
+        if (!r.ok) throw new Error("Failed to load workspace");
         return r.json() as Promise<{
           elements: ExcalidrawElement[];
           title?: string;
@@ -101,10 +124,12 @@ export default function WorkspacePage() {
             boundElements: el.boundElements ?? [],
             groupIds: (el as any).groupIds ?? [],
           }));
-        // Store raw normalized so post-mount effect can re-convert with correct fonts
         rawNormalizedRef.current = normalized;
-        // Initial conversion (fonts may not be loaded yet - post-mount effect corrects this)
-        const converted = await convertWithFonts(normalized);
+        const converted = await prepareElements(normalized);
+        savedVersionSumRef.current = converted.reduce(
+          (s, el: any) => s + (el.version ?? 0),
+          0,
+        );
         setInitialElements(converted);
         const t = data.title ?? "";
         setTitle(t);
@@ -112,6 +137,7 @@ export default function WorkspacePage() {
           setEditingTitle(true);
           setTitleDraft("");
         }
+        setSaveStatus("saved");
         setLoading(false);
       })
       .catch((e: Error) => {
@@ -120,17 +146,30 @@ export default function WorkspacePage() {
       });
   }, [id]);
 
-  // Post-mount re-convert: by the time excalidrawAPI is set, Excalifont/Virgil
-  // are fully loaded, so measureText produces correct element widths.
+  // Post-mount: re-convert with fully-loaded fonts then scroll to fit.
+  // Excalidraw registers Excalifont/Virgil programmatically after mount so
+  // measureText inside convertToExcalidrawElements produces correct widths here.
+  // suppressOnChangeRef blocks handleChange for 1500ms so the updateScene call
+  // doesn't flip the indicator to "unsaved".
   useEffect(() => {
     if (!excalidrawAPI || !rawNormalizedRef.current) return;
     const normalized = rawNormalizedRef.current;
-    convertWithFonts(normalized).then((converted) => {
+    prepareElements(normalized).then((converted) => {
+      suppressOnChangeRef.current = true;
       excalidrawAPI.updateScene({ elements: converted });
       excalidrawAPI.scrollToContent(converted, {
         fitToContent: true,
         animate: false,
       });
+      setTimeout(() => {
+        suppressOnChangeRef.current = false;
+        const els = excalidrawAPI.getSceneElements();
+        savedVersionSumRef.current = els.reduce(
+          (s: number, el: any) => s + (el.version ?? 0),
+          0,
+        );
+        setSaveStatus("saved");
+      }, 1500);
     });
   }, [excalidrawAPI]);
 
@@ -151,15 +190,28 @@ export default function WorkspacePage() {
 
   const handleChange = useCallback(
     (elements: readonly ExcalidrawElement[]) => {
+      if (suppressOnChangeRef.current) return;
+      currentElementsRef.current = elements;
+      const versionSum = elements.reduce(
+        (s, el: any) => s + (el.version ?? 0),
+        0,
+      );
+      if (versionSum === savedVersionSumRef.current) return;
       if (saveTimer.current) clearTimeout(saveTimer.current);
-      setSaved(false);
+      setSaveStatus("unsaved");
       saveTimer.current = setTimeout(() => {
+        const els = currentElementsRef.current;
+        const sum = els.reduce((s, el: any) => s + (el.version ?? 0), 0);
+        setSaveStatus("saving");
         fetch(`/api/checkpoint/${id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ elements }),
-        }).then(() => setSaved(true));
-      }, 2000);
+          body: JSON.stringify({ elements: els }),
+        }).then(() => {
+          savedVersionSumRef.current = sum;
+          setSaveStatus("saved");
+        });
+      }, 5000);
     },
     [id],
   );
@@ -243,9 +295,15 @@ export default function WorkspacePage() {
         </div>
         <div className="flex items-center gap-3 shrink-0">
           <span
-            className={`flex items-center gap-1 text-xs font-medium transition-colors ${saved ? "text-emerald-500" : "text-gray-400"}`}
+            className={`flex items-center gap-1 text-xs font-medium transition-colors ${
+              saveStatus === "saved"
+                ? "text-emerald-500"
+                : saveStatus === "saving"
+                  ? "text-blue-400"
+                  : "text-gray-400"
+            }`}
           >
-            {saved ? (
+            {saveStatus === "saved" && (
               <>
                 <svg
                   width="10"
@@ -261,7 +319,24 @@ export default function WorkspacePage() {
                 </svg>
                 Saved
               </>
-            ) : (
+            )}
+            {saveStatus === "saving" && (
+              <>
+                <svg
+                  className="animate-spin"
+                  width="10"
+                  height="10"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeLinecap="round" />
+                </svg>
+                Saving…
+              </>
+            )}
+            {saveStatus === "unsaved" && (
               <>
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />
                 Unsaved
