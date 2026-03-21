@@ -118,6 +118,22 @@ function TitleCell({
 export default function WorkspacesPage() {
   const router = useRouter();
   const [entries, setEntries] = useState<CheckpointEntry[] | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  async function handleNewDiagram() {
+    setCreating(true);
+    try {
+      const res = await fetch("/api/checkpoints", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Untitled" }),
+      });
+      const { id } = await res.json();
+      router.push(`/workspace/${id}`);
+    } catch {
+      setCreating(false);
+    }
+  }
 
   useEffect(() => {
     fetch("/api/checkpoints")
@@ -188,10 +204,12 @@ export default function WorkspacesPage() {
             Saved Diagrams
           </h1>
           <button
-            onClick={() => router.push("/")}
-            className="text-xs text-[#6965db] hover:text-[#5b57d1] font-medium transition-colors cursor-pointer"
+            onClick={handleNewDiagram}
+            disabled={creating}
+            title="Open a blank canvas to draw manually"
+            className="text-xs text-[#6965db] hover:text-[#5b57d1] font-medium transition-colors cursor-pointer disabled:opacity-50"
           >
-            + New diagram
+            {creating ? "Creating…" : "+ Blank canvas"}
           </button>
         </div>
         {entries === null && (
@@ -235,38 +253,40 @@ export default function WorkspacesPage() {
             {entries.map(({ id, mtime, title }) => (
               <div
                 key={id}
-                className="relative flex items-center gap-4 px-5 py-4 rounded-lg border border-gray-100 hover:border-[#6965db]/30 hover:bg-[#6965db]/[0.03] transition-colors"
+                className="relative flex items-center justify-between gap-4 px-5 py-4 rounded-lg border border-gray-100 hover:border-[#6965db]/30 hover:bg-[#6965db]/[0.03] transition-colors"
               >
                 <Link
                   href={`/workspace/${id}`}
                   className="absolute inset-0 rounded-lg"
                   aria-label={`Open ${title ?? id}`}
                 />
-                <div className="relative z-10 w-10 h-10 rounded-md bg-[#6965db]/10 flex items-center justify-center shrink-0">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="#6965db"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                  >
-                    <rect x="3" y="3" width="18" height="18" rx="2" />
-                    <path d="M8 12l3 3 5-5" />
-                  </svg>
+                <div className="relative z-10 flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-md bg-[#6965db]/10 flex items-center justify-center shrink-0">
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="#6965db"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                    >
+                      <rect x="3" y="3" width="18" height="18" rx="2" />
+                      <path d="M8 12l3 3 5-5" />
+                    </svg>
+                  </div>
+                  <div className="w-fit pl-2">
+                    <TitleCell
+                      id={id}
+                      initialTitle={title}
+                      onSave={handleTitleSave}
+                    />
+                    <p className="text-xs font-mono text-gray-400 truncate mt-0.5">
+                      {id}
+                    </p>
+                  </div>
                 </div>
-                <div className="relative z-10 flex-1 min-w-0">
-                  <TitleCell
-                    id={id}
-                    initialTitle={title}
-                    onSave={handleTitleSave}
-                  />
-                  <p className="text-xs font-mono text-gray-400 truncate mt-0.5">
-                    {id}
-                  </p>
-                </div>
-                <div className="relative z-10 flex flex-col items-end gap-1 shrink-0">
+                <div className="relative z-10 flex flex-col items-end gap-1 shrink-0 pr-4">
                   <span className="text-sm text-gray-400">
                     {formatDate(mtime)}
                   </span>
