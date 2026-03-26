@@ -4,10 +4,12 @@ import {
   CopilotChat,
   useAgentContext,
   useFrontendTool,
+  useAgent,
+  useCopilotKit,
 } from "@copilotkit/react-core/v2";
 import { z } from "zod";
 import Link from "next/link";
-import { useEffect, useState, Suspense } from "react";
+import { useEffect, useRef, useState, Suspense } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams, useRouter } from "next/navigation";
 import { McpWidgetZoom } from "@/components/mcp-widget-zoom";
@@ -76,6 +78,12 @@ const SUGGESTIONS = [
   "Draw a user auth flow",
 ];
 
+const EDIT_SUGGESTIONS = [
+  "Add a database layer",
+  "Simplify the layout",
+  "Add color coding by type",
+];
+
 const PORTAL_ID = "excalidraw-welcome-portal";
 
 function DiagramSession({
@@ -89,6 +97,27 @@ function DiagramSession({
 }) {
   const [currentElements, setCurrentElements] = useState<any[]>([]);
   const activeId = sessionCheckpointId ?? urlCheckpointId;
+  const { agent } = useAgent();
+  const { copilotkit } = useCopilotKit();
+  const hasAutoShown = useRef(false);
+
+  const prevCheckpointRef = useRef(urlCheckpointId);
+
+  // Clear session when switching to a different workspace
+  useEffect(() => {
+    if (
+      urlCheckpointId !== prevCheckpointRef.current
+    ) {
+      prevCheckpointRef.current = urlCheckpointId;
+      hasAutoShown.current = false;
+      // Clear agent messages so old conversation doesn't bleed into new workspace
+      try {
+        agent.setMessages([]);
+      } catch {
+        // agent may not be ready yet
+      }
+    }
+  }, [urlCheckpointId, agent]);
 
   // Keep currentElements in sync with the active workspace
   useEffect(() => {
@@ -96,15 +125,50 @@ function DiagramSession({
       setCurrentElements([]);
       return;
     }
-    fetch(`/api/checkpoint/${activeId}`)
-      .then((r) => r.json())
-      .then((d) => setCurrentElements(d.elements ?? []))
-      .catch(() => {});
+    const fetchElements = () => {
+      fetch(`/api/checkpoint/${activeId}`)
+        .then((r) => r.json())
+        .then((d) => setCurrentElements(d.elements ?? []))
+        .catch(() => {});
+    };
+    fetchElements();
+    // Re-fetch when user returns from workspace tab
+    const onVisible = () => {
+      if (document.visibilityState === "visible") fetchElements();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, [activeId]);
+
+  // Auto-show: when entering edit mode, trigger the agent to render the current diagram
+  useEffect(() => {
+    if (
+      !urlCheckpointId ||
+      currentElements.length === 0 ||
+      hasAutoShown.current
+    )
+      return;
+    hasAutoShown.current = true;
+    const autoShow = async () => {
+      // Small delay to let useAgentContext register elements
+      await new Promise((r) => setTimeout(r, 300));
+      agent.addMessage({
+        id: crypto.randomUUID(),
+        role: "user",
+        content: "Show current diagram",
+      });
+      try {
+        await copilotkit.runAgent({ agent });
+      } catch (err) {
+        console.error("[auto-show] runAgent failed", err);
+      }
+    };
+    autoShow();
+  }, [urlCheckpointId, currentElements, agent, copilotkit]);
 
   useAgentContext({
     description: activeId
-      ? `ACTIVE DIAGRAM SESSION — workspace id: "${activeId}". The current elements are provided in the value below. Rules: (1) Generate the COMPLETE final elements array in create_view — include every element you want in the final diagram. Do NOT use restoreCheckpoint. (2) After create_view, ALWAYS call update_session_workspace with the new checkpointId.`
+      ? `ACTIVE DIAGRAM SESSION — workspace id: "${activeId}". The current elements are in the value below. Rules: (1) If the user message is "Show current diagram" or similar short display requests, immediately call create_view with the currentElements array exactly as-is — no changes, no commentary before calling it. (2) For edits, generate the COMPLETE final elements array in create_view. Do NOT use restoreCheckpoint. (3) After every create_view, ALWAYS call update_session_workspace with the new checkpointId.`
       : `After every create_view call, always call update_session_workspace with the checkpointId from the response to register it as the active workspace for this session.`,
     value: activeId
       ? JSON.parse(
@@ -203,15 +267,18 @@ function CheckpointBanner({ checkpointId }: { checkpointId: string }) {
       </svg>
       <span className="flex-1 min-w-0 truncate">
         Editing{" "}
-        <Link
-          href={`/workspace/${checkpointId}`}
-          target="_blank"
-          className="font-mono font-medium underline underline-offset-2 hover:opacity-70 transition-opacity"
-        >
-          {checkpointId}
-        </Link>{" "}
-        · describe your changes
+        <span className="font-mono font-medium">
+          {checkpointId.slice(0, 8)}
+        </span>{" "}
+        · loading your diagram
       </span>
+      <Link
+        href={`/workspace/${checkpointId}`}
+        target="_blank"
+        className="text-[11px] text-[#6965db]/70 hover:text-[#6965db] transition-colors px-2 py-0.5 rounded border border-[#6965db]/20 hover:border-[#6965db]/40 shrink-0"
+      >
+        Open workspace
+      </Link>
       <button
         onClick={() => router.replace("/")}
         className="text-[#6965db]/50 hover:text-[#6965db] transition-colors cursor-pointer shrink-0"
@@ -396,37 +463,34 @@ function HomeContent() {
                 chatDisclaimerText: "",
               }}
             />
-            {!urlCheckpointId && (
-              <WelcomePortal>
-                <div className="grid grid-cols-3 gap-2.5 px-6 pt-3 pb-1">
-                  {CARDS.map(({ icon, title, desc }) => (
-                    <div
-                      key={title}
-                      className="flex items-start gap-2.5 p-3 rounded-xl border border-gray-100"
+            <WelcomePortal>
+              {urlCheckpointId ? (
+                <div className="pt-4 pb-4 flex flex-col items-center gap-3">
+                  <div className="flex items-center gap-2 text-[#6965db]">
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      className="animate-spin"
                     >
-                      <div className="w-7 h-7 rounded-lg bg-[#6965db]/10 text-[#6965db] flex items-center justify-center shrink-0 mt-0.5">
-                        {icon}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-gray-800 leading-snug">
-                          {title}
-                        </p>
-                        <p className="text-xs text-gray-400 leading-snug mt-0.5">
-                          {desc}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="pt-6 pb-4 flex flex-col items-center gap-2">
-                  <p className="text-[11px] font-medium text-gray-500 tracking-wider select-none">
-                    Try these Prompts
+                      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                    </svg>
+                    <p className="text-sm text-gray-500">
+                      Loading your diagram...
+                    </p>
+                  </div>
+                  <p className="text-[11px] font-medium text-gray-400 tracking-wider select-none mt-2">
+                    Or describe a change
                   </p>
-                  <div className="flex items-center gap-4">
-                    {SUGGESTIONS.map((s) => (
+                  <div className="flex items-center gap-3">
+                    {EDIT_SUGGESTIONS.map((s) => (
                       <button
                         key={s}
-                        className="text-xs text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-full px-3 py-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                        className="text-xs text-[#6965db] bg-[#6965db]/5 hover:bg-[#6965db]/10 border border-[#6965db]/20 rounded-full px-3 py-1.5 transition-colors cursor-pointer whitespace-nowrap"
                         onClick={() => {
                           const input = document.querySelector<
                             HTMLTextAreaElement | HTMLInputElement
@@ -454,8 +518,67 @@ function HomeContent() {
                     ))}
                   </div>
                 </div>
-              </WelcomePortal>
-            )}
+              ) : (
+                <>
+                  <div className="grid grid-cols-3 gap-2.5 px-6 pt-3 pb-1">
+                    {CARDS.map(({ icon, title, desc }) => (
+                      <div
+                        key={title}
+                        className="flex items-start gap-2.5 p-3 rounded-xl border border-gray-100"
+                      >
+                        <div className="w-7 h-7 rounded-lg bg-[#6965db]/10 text-[#6965db] flex items-center justify-center shrink-0 mt-0.5">
+                          {icon}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-gray-800 leading-snug">
+                            {title}
+                          </p>
+                          <p className="text-xs text-gray-400 leading-snug mt-0.5">
+                            {desc}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="pt-6 pb-4 flex flex-col items-center gap-2">
+                    <p className="text-[11px] font-medium text-gray-500 tracking-wider select-none">
+                      Try these Prompts
+                    </p>
+                    <div className="flex items-center gap-4">
+                      {SUGGESTIONS.map((s) => (
+                        <button
+                          key={s}
+                          className="text-xs text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-full px-3 py-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                          onClick={() => {
+                            const input = document.querySelector<
+                              HTMLTextAreaElement | HTMLInputElement
+                            >("textarea, input[type='text']");
+                            if (input) {
+                              const nativeInputValueSetter =
+                                Object.getOwnPropertyDescriptor(
+                                  window.HTMLTextAreaElement.prototype,
+                                  "value",
+                                )?.set ??
+                                Object.getOwnPropertyDescriptor(
+                                  window.HTMLInputElement.prototype,
+                                  "value",
+                                )?.set;
+                              nativeInputValueSetter?.call(input, s);
+                              input.dispatchEvent(
+                                new Event("input", { bubbles: true }),
+                              );
+                              input.focus();
+                            }
+                          }}
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </WelcomePortal>
           </div>
         </div>
       </main>

@@ -78,23 +78,48 @@ Per section, emit in this order:
 - Minimum size: \`120x60\` for labeled boxes
 - Add \`roundness: { type: 3 }\` for rounded corners
 
-### Arrows
+### Arrows (CRITICAL for quality)
 - Include \`endArrowhead: "arrow"\` for direction
 - Use \`strokeStyle: "dashed"\` for responses/optional paths
 - Keep labels **under 15 characters** or omit
 - Use \`startBinding\` / \`endBinding\` with \`fixedPoint\` to attach cleanly
+- **Route arrows cleanly** — never have multiple arrows overlap on the same path. Space parallel arrows 20px apart vertically or horizontally
+- **Avoid arrow spaghetti** — if >3 arrows originate from one node, consider using a hub/router node or grouping connections
+- **Use curved arrows** for non-adjacent connections: add intermediate points, e.g. \`"points":[[0,0],[50,-40],[150,0]]\` for a gentle arc
+- **Color arrows by flow type** — data flow: #1e1e1e, control flow: #8b5cf6, error path: #ef4444, response: dashed #757575
+- **Arrow tips should have clearance** — leave 5px gap between arrowhead and target shape edge
 
 ---
 
-## Step 4 — Diagram type patterns
+## Step 4 — Professional visual polish
 
-**Architecture** — Zones as swim lanes (left-to-right). Arrows show data flow.
+### Layout hierarchy
+- **Title** at top-center, fontSize 28, bold feel — this anchors the diagram
+- **Subtitle/description** below title, fontSize 16, color #757575
+- **Zone labels** inside zone backgrounds, top-left, fontSize 16, use the zone's dark stroke color
+- **Visual rhythm** — align nodes to a grid. Same-level nodes should share the same y-coordinate. Columns should share the same x-coordinate.
 
-**Sequence** — Actors as header boxes with lifelines. Horizontal arrows = messages. Pan down as flow progresses.
+### Visual variety (avoid monotone boxes)
+- Use **diamonds** for decision points, **ellipses** for start/end states
+- Use **different fill colors** per zone — don't make everything the same color
+- Add **subtle annotations** (small yellow note boxes) to explain non-obvious connections
+- Use **opacity: 30-40** for zone backgrounds so they don't overpower the nodes inside
+- Vary shape sizes based on importance — key nodes should be larger (180x80), secondary nodes smaller (140x60)
 
-**Process/Flowchart** — Top-to-bottom. Diamonds for decisions, rectangles for steps. Color-code by stage.
+### Arrow aesthetics
+- Keep arrows **short and direct** — reorganize layout to minimize arrow length
+- Use **consistent strokeWidth** (2 for primary, 1 for secondary)
+- Arrow labels should be **concise verbs**: "sends", "reads", "returns", not full sentences
 
-**Concept** — Start zoomed on title, reveal parts progressively. Use annotation boxes as callouts.
+### Diagram type patterns
+
+**Architecture** — Zones as swim lanes (left-to-right or top-to-bottom). Arrows show data flow. Include a legend zone if >4 colors used.
+
+**Sequence** — Actors as header boxes with lifelines. Horizontal arrows = messages. Pan down as flow progresses. Number the steps.
+
+**Process/Flowchart** — Top-to-bottom. Diamonds for decisions, rectangles for steps. Color-code by stage. Add "Yes"/"No" labels on decision branches.
+
+**Concept/Explainer** — Start zoomed on title, reveal parts progressively. Use annotation boxes as callouts. Add numbered steps for learning flow.
 
 ---
 
@@ -147,6 +172,10 @@ Draw section by section with camera moves:
 - **Light text on white** — Use #757575 minimum
 - **Zone label covered by nodes** — Put label 8px from zone top, nodes 40px below
 - **Shapes touching edges** — Leave padding; awkward layout
+- **Arrow spaghetti** — Multiple arrows overlapping on the same path. Route them apart or use intermediate nodes
+- **All same-sized boxes** — Vary dimensions by importance. Key components get bigger boxes
+- **No visual hierarchy** — Title should be prominent, zone labels medium, node labels smallest. Use fontSize to create 3 levels
+- **Too compact** — Give the diagram room to breathe. Whitespace is your friend. 80-100px gaps between major sections
 
 ---
 
