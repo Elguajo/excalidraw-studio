@@ -54,10 +54,34 @@ function parsePartialElements(str: string | undefined): any[] {
   return [];
 }
 
+/** Check if a parsed element looks structurally complete (has required fields). */
+function looksComplete(el: any): boolean {
+  if (!el || typeof el !== "object" || !el.type) return false;
+  // Pseudo-elements are always complete if they have their key field
+  if (el.type === "cameraUpdate") return el.width != null && el.height != null;
+  if (el.type === "delete") return el.ids != null || el.id != null;
+  if (el.type === "restoreCheckpoint") return el.id != null;
+  // Real elements need at least type + id + x + y
+  return el.id != null && el.x != null && el.y != null;
+}
+
 function excludeIncompleteLastItem<T>(arr: T[]): T[] {
   if (!arr || arr.length === 0) return [];
   if (arr.length <= 1) return [];
+  // Keep the last element if it looks complete
+  const last = arr[arr.length - 1];
+  if (looksComplete(last)) return arr;
   return arr.slice(0, -1);
+}
+
+/** Generate a deterministic seed from an element ID string. */
+function stableSeed(id: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0) % 1e9;
 }
 
 interface ViewportRect {
@@ -101,27 +125,6 @@ function convertRawElements(els: any[]): any[] {
   return [...converted, ...pseudos];
 }
 
-/** Fix SVG viewBox to 4:3 by expanding the smaller dimension and centering. */
-function fixViewBox4x3(svg: SVGSVGElement): void {
-  const vb = svg.getAttribute("viewBox")?.split(" ").map(Number);
-  if (!vb || vb.length !== 4) return;
-  const [vx, vy, vw, vh] = vb;
-  const r = vw / vh;
-  if (Math.abs(r - 4 / 3) < 0.01) return;
-  if (r > 4 / 3) {
-    const h2 = Math.round((vw * 3) / 4);
-    svg.setAttribute(
-      "viewBox",
-      `${vx} ${vy - Math.round((h2 - vh) / 2)} ${vw} ${h2}`,
-    );
-  } else {
-    const w2 = Math.round((vh * 4) / 3);
-    svg.setAttribute(
-      "viewBox",
-      `${vx - Math.round((w2 - vw) / 2)} ${vy} ${w2} ${vh}`,
-    );
-  }
-}
 
 function extractViewportAndElements(elements: any[]): {
   viewport: ViewportRect | null;
@@ -299,7 +302,7 @@ function ShareButton({ onConfirm }: { onConfirm: () => Promise<void> }) {
 // Diagram component (Excalidraw SVG)
 // ============================================================
 
-const LERP_SPEED = 0.03; // 0–1, higher = faster snap
+const LERP_SPEED = 0.1; // 0–1, higher = faster snap
 const EXPORT_PADDING = 20;
 
 /**
@@ -363,13 +366,20 @@ function DiagramView({
   const latestRef = useRef<any[]>([]);
   const restoredRef = useRef<{ id: string; elements: any[] } | null>(null);
   const [, setCount] = useState(0);
+  // RAF-based throttle for streaming renders (~60fps cap)
+  const pendingStreamRef = useRef<(() => void) | null>(null);
+  const streamRafRef = useRef<number>(0);
 
   // Init pencil audio on first mount
   useEffect(() => {
     initPencilAudio();
   }, []);
 
-  // Set container height: 4:3 in inline, full viewport in fullscreen
+  // Natural aspect ratio of the rendered diagram (updated on each render)
+  const naturalAspectRef = useRef<number>(3 / 4); // default 4:3 until first render
+
+
+  // Resize container height based on natural aspect ratio (responds to window resize)
   useEffect(() => {
     if (!svgRef.current) return;
     if (displayMode === "fullscreen") {
@@ -379,7 +389,9 @@ function DiagramView({
     const observer = new ResizeObserver(([entry]) => {
       const w = entry.contentRect.width;
       if (w > 0 && svgRef.current) {
-        svgRef.current.style.height = `${Math.round((w * 3) / 4)}px`;
+        const h = Math.round(w * naturalAspectRef.current);
+        svgRef.current.style.height = `${h}px`;
+        window.parent.postMessage({ type: "excalidraw-widget-dimensions", height: h }, "*");
       }
     });
     observer.observe(svgRef.current);
@@ -436,18 +448,21 @@ function DiagramView({
     const svg = svgRef.current.querySelector("svg");
     if (!svg) return;
     const { minX, minY } = sceneBoundsRef.current;
-    const { x, y, width: w, height: h } = animatedVP.current;
-    const ratio = w / h;
-    const vp4x3: ViewportRect =
-      Math.abs(ratio - 4 / 3) < 0.01
-        ? animatedVP.current
-        : ratio > 4 / 3
-          ? { x, y, width: w, height: Math.round((w * 3) / 4) }
-          : { x, y, width: Math.round((h * 4) / 3), height: h };
-    const vb = sceneToSvgViewBox(vp4x3, minX, minY);
+    // Use natural viewport ratio — no forced 4:3 crop
+    const vb = sceneToSvgViewBox(animatedVP.current, minX, minY);
     baseViewBoxRef.current = { x: vb.x, y: vb.y, w: vb.w, h: vb.h };
+    naturalAspectRef.current = vb.h / vb.w;
     applyZoom();
-  }, [applyZoom]);
+    // Notify parent to resize container to match natural aspect
+    if (displayMode !== "fullscreen") {
+      const containerW = svgRef.current.offsetWidth;
+      if (containerW > 0) {
+        const h = Math.round(containerW * naturalAspectRef.current);
+        svgRef.current.style.height = `${h}px`;
+        window.parent.postMessage({ type: "excalidraw-widget-dimensions", height: h }, "*");
+      }
+    }
+  }, [applyZoom, displayMode]);
 
   /** Lerp scene-space viewport toward target each frame. */
   const animateViewBox = useCallback(() => {
@@ -469,12 +484,16 @@ function DiagramView({
     }
   }, [applyViewBox]);
 
-  // Cleanup animation on unmount
+  // Cleanup animations on unmount
   useEffect(() => {
     return () => {
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      if (streamRafRef.current) cancelAnimationFrame(streamRafRef.current);
     };
   }, []);
+
+  // Stores the last full excalidrawEls array used for rendering — used by export handler
+  const lastRenderElsRef = useRef<any[]>([]);
 
   const renderSvgPreview = useCallback(
     async (els: any[], viewport: ViewportRect | null, baseElements?: any[]) => {
@@ -489,6 +508,7 @@ function DiagramView({
         const baseReal =
           baseElements?.filter((el: any) => el.type !== "cameraUpdate") ?? [];
         const excalidrawEls = [...baseReal, ...convertedNew];
+        lastRenderElsRef.current = excalidrawEls;
 
         // Update scene bounds from all elements
         sceneBoundsRef.current = computeSceneBounds(excalidrawEls);
@@ -527,10 +547,9 @@ function DiagramView({
           wrapper.appendChild(svg);
         }
 
-        // Always fix SVG viewBox to 4:3, then store as base for user zoom
+        // Store natural viewBox as base for user zoom (no forced 4:3 crop)
         const renderedSvg = wrapper.querySelector("svg");
         if (renderedSvg) {
-          fixViewBox4x3(renderedSvg as SVGSVGElement);
           const vbAttr = (renderedSvg as SVGSVGElement)
             .getAttribute("viewBox")
             ?.split(" ")
@@ -559,25 +578,25 @@ function DiagramView({
           if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
           animFrameRef.current = requestAnimationFrame(animateViewBox);
         } else {
-          // No explicit viewport — use default
-          const defaultVP: ViewportRect = {
-            x: 0,
-            y: 0,
-            width: 1024,
-            height: 768,
-          };
-          onViewport?.(defaultVP);
-          targetVP.current = defaultVP;
-          if (!animatedVP.current) {
-            animatedVP.current = { ...defaultVP };
-          }
-          applyViewBox();
+          // No explicit viewport — use natural bounds from exportToSvg (content perfectly fills view)
           if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-          animFrameRef.current = requestAnimationFrame(animateViewBox);
+          animatedVP.current = null;
           targetVP.current = null;
-          if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-          // Apply user zoom on top of the fixed viewBox
+          // baseViewBoxRef was already set from the rendered SVG above — just zoom
           applyZoom();
+          // Resize container to natural aspect ratio
+          if (baseViewBoxRef.current && displayMode !== "fullscreen" && svgRef.current) {
+            const { w, h } = baseViewBoxRef.current;
+            if (w > 0) {
+              naturalAspectRef.current = h / w;
+              const containerW = svgRef.current.offsetWidth;
+              if (containerW > 0) {
+                const newH = Math.round(containerW * naturalAspectRef.current);
+                svgRef.current.style.height = `${newH}px`;
+                window.parent.postMessage({ type: "excalidraw-widget-dimensions", height: newH }, "*");
+              }
+            }
+          }
         }
       } catch {
         // export can fail on partial/malformed elements
@@ -701,28 +720,41 @@ function DiagramView({
         }
       }
 
-      if (
-        drawElements.length > 0 &&
-        drawElements.length !== latestRef.current.length
-      ) {
+      // Determine if anything changed worth re-rendering
+      const countChanged = drawElements.length !== latestRef.current.length;
+      const vpChanged = viewport != null && JSON.stringify(viewport) !== JSON.stringify(targetVP.current);
+      const shouldRender = (drawElements.length > 0 && (countChanged || vpChanged));
+
+      if (shouldRender) {
         // Play pencil sound for each new element
-        const prevCount = latestRef.current.length;
-        for (let i = prevCount; i < drawElements.length; i++) {
-          playStroke(drawElements[i].type ?? "rectangle");
+        if (countChanged) {
+          const prevCount = latestRef.current.length;
+          for (let i = prevCount; i < drawElements.length; i++) {
+            playStroke(drawElements[i].type ?? "rectangle");
+          }
         }
         latestRef.current = drawElements;
         setCount(drawElements.length);
-        const jittered = drawElements.map((el: any) => ({
+        // Use stable deterministic seeds per element ID — prevents hand-drawn jitter
+        const seeded = drawElements.map((el: any) => ({
           ...el,
-          seed: Math.floor(Math.random() * 1e9),
+          seed: el.id ? stableSeed(el.id) : Math.floor(Math.random() * 1e9),
         }));
-        renderSvgPreview(jittered, viewport, base);
+        renderSvgPreview(seeded, viewport, base);
       } else if (base && base.length > 0 && latestRef.current.length === 0) {
         // First render: show restored base before new elements stream in
         renderSvgPreview([], viewport, base);
       }
     };
-    doStream();
+    // Throttle streaming renders via RAF — batch rapid partial updates
+    pendingStreamRef.current = doStream;
+    if (!streamRafRef.current) {
+      streamRafRef.current = requestAnimationFrame(() => {
+        streamRafRef.current = 0;
+        pendingStreamRef.current?.();
+        pendingStreamRef.current = null;
+      });
+    }
   }, [toolInput, isFinal, renderSvgPreview]);
 
   // Render already-converted elements directly (skip convertToExcalidrawElements)
@@ -763,7 +795,6 @@ function DiagramView({
         }
         const final = wrapper.querySelector("svg");
         if (final) {
-          fixViewBox4x3(final as SVGSVGElement);
           const vbAttr = (final as SVGSVGElement)
             .getAttribute("viewBox")
             ?.split(" ")
@@ -775,7 +806,17 @@ function DiagramView({
               w: vbAttr[2],
               h: vbAttr[3],
             };
+            naturalAspectRef.current = vbAttr[3] / vbAttr[2];
             applyZoom();
+            // Resize container to natural aspect
+            if (displayMode !== "fullscreen" && svgRef.current) {
+              const cw = svgRef.current.offsetWidth;
+              if (cw > 0) {
+                const nh = Math.round(cw * naturalAspectRef.current);
+                svgRef.current.style.height = `${nh}px`;
+                window.parent.postMessage({ type: "excalidraw-widget-dimensions", height: nh }, "*");
+              }
+            }
           }
         }
       } catch {}
@@ -827,6 +868,35 @@ function DiagramView({
       container.removeEventListener("dblclick", handleDblClick);
     };
   }, [applyZoom]);
+
+  // Export handler — uses exact excalidrawEls from last render (no re-processing)
+  useEffect(() => {
+    const handler = async (e: MessageEvent) => {
+      if (e.data?.type !== "excalidraw-export-request") return;
+      const els = lastRenderElsRef.current;
+      if (!els || els.length === 0) return;
+      try {
+        await document.fonts.load("20px Excalifont");
+        await document.fonts.ready;
+        const svg = await exportToSvg({
+          elements: els as any,
+          appState: {
+            viewBackgroundColor: "#ffffff",
+            exportBackground: true,
+          } as any,
+          files: null,
+          exportPadding: EXPORT_PADDING,
+          skipInliningFonts: false,
+        });
+        const svgStr = new XMLSerializer().serializeToString(svg);
+        window.parent.postMessage({ type: "excalidraw-svg-data", svg: svgStr }, "*");
+      } catch {
+        // silent fail
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
 
   return (
     <div
@@ -1036,6 +1106,8 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
   useEffect(() => {
     elementsRef.current = elements;
   }, [elements]);
+
+  // Export is handled by DiagramView (has direct access to rendered excalidrawEls)
 
   // Set up MCP event handlers when app is provided
   useEffect(() => {
