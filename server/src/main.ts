@@ -51,12 +51,14 @@ export async function startStreamableHTTPServer(
   app.get("/checkpoints", async (_req: Request, res: Response) => {
     try {
       const list = await store.list();
-      // Exclude soft-deleted checkpoints from the list
+      // Exclude soft-deleted checkpoints and draw_element session keys (draw-*)
       const visible = await Promise.all(
-        list.map(async (item) => {
-          const data = await store.load(item.id);
-          return data?.deleted || data?.redirectTo ? null : item;
-        }),
+        list
+          .filter((item) => !item.id.startsWith("draw-"))
+          .map(async (item) => {
+            const data = await store.load(item.id);
+            return data?.deleted || data?.redirectTo ? null : item;
+          }),
       );
       res.json(visible.filter(Boolean));
     } catch (e) {

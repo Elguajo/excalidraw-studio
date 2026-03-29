@@ -5,6 +5,7 @@ import {
   useAgentContext,
   useFrontendTool,
   useAgent,
+  UseAgentUpdate,
   useCopilotKit,
 } from "@copilotkit/react-core/v2";
 import { z } from "zod";
@@ -86,6 +87,43 @@ const EDIT_SUGGESTIONS = [
 
 const PORTAL_ID = "excalidraw-welcome-portal";
 
+const TOOL_LABELS: Record<string, string> = {
+  read_me: "Reading diagram guide…",
+  draw_element: "Drawing elements…",
+  create_view: "Rendering diagram…",
+};
+
+function AgentActivityBar() {
+  const { agent } = useAgent({
+    updates: [UseAgentUpdate.OnMessagesChanged, UseAgentUpdate.OnRunStatusChanged],
+  });
+  const isRunning = (agent as any).isRunning as boolean;
+  const msgs: any[] = (agent as any).messages ?? [];
+  const lastAssistant = [...msgs].reverse().find((m: any) => m.role === "assistant");
+  const toolName = lastAssistant?.toolCalls?.[0]?.function?.name as string | undefined;
+  const label = isRunning ? ((toolName && TOOL_LABELS[toolName]) ?? "Thinking…") : null;
+
+  if (!label) return null;
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-[#6965db] bg-[#6965db]/5 border-t border-[#6965db]/10">
+      <svg
+        width="10"
+        height="10"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        className="animate-spin shrink-0"
+      >
+        <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+      </svg>
+      <span>{label}</span>
+    </div>
+  );
+}
+
 function DiagramSession({
   urlCheckpointId,
   sessionCheckpointId,
@@ -100,14 +138,18 @@ function DiagramSession({
   const { agent } = useAgent();
   const { copilotkit } = useCopilotKit();
   const hasAutoShown = useRef(false);
+  // Stable refs so auto-show effect doesn't re-fire on agent/copilotkit reference churn
+  const agentRef = useRef(agent);
+  const copilotKitRef = useRef(copilotkit);
+  agentRef.current = agent;
+  copilotKitRef.current = copilotkit;
 
-  const prevCheckpointRef = useRef(urlCheckpointId);
+  // Use a sentinel so the effect always fires on mount when urlCheckpointId is defined
+  const prevCheckpointRef = useRef<string | undefined>("__unset__");
 
-  // Clear session when switching to a different workspace
+  // Clear session when urlCheckpointId changes (including on initial mount with a checkpoint)
   useEffect(() => {
-    if (
-      urlCheckpointId !== prevCheckpointRef.current
-    ) {
+    if (urlCheckpointId !== prevCheckpointRef.current) {
       prevCheckpointRef.current = urlCheckpointId;
       hasAutoShown.current = false;
       // Clear agent messages so old conversation doesn't bleed into new workspace
@@ -125,8 +167,12 @@ function DiagramSession({
       setCurrentElements([]);
       return;
     }
+    // Abort controller cancels in-flight fetch if activeId changes before response
+    let controller = new AbortController();
     const fetchElements = () => {
-      fetch(`/api/checkpoint/${activeId}`)
+      controller.abort();
+      controller = new AbortController();
+      fetch(`/api/checkpoint/${activeId}`, { signal: controller.signal })
         .then((r) => r.json())
         .then((d) => setCurrentElements(d.elements ?? []))
         .catch(() => {});
@@ -137,34 +183,35 @@ function DiagramSession({
       if (document.visibilityState === "visible") fetchElements();
     };
     document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
+    return () => {
+      controller.abort();
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [activeId]);
 
-  // Auto-show: when entering edit mode, trigger the agent to render the current diagram
+  // Auto-show: when entering edit mode, trigger the agent to render the current diagram.
+  // Uses refs for agent/copilotkit so this effect only re-runs when the data it cares about
+  // changes (urlCheckpointId / currentElements), not on every reference churn render.
   useEffect(() => {
-    if (
-      !urlCheckpointId ||
-      currentElements.length === 0 ||
-      hasAutoShown.current
-    )
-      return;
+    if (!urlCheckpointId || currentElements.length === 0 || hasAutoShown.current) return;
     hasAutoShown.current = true;
     const autoShow = async () => {
       // Small delay to let useAgentContext register elements
       await new Promise((r) => setTimeout(r, 300));
-      agent.addMessage({
+      agentRef.current.addMessage({
         id: crypto.randomUUID(),
         role: "user",
         content: "Show current diagram",
       });
       try {
-        await copilotkit.runAgent({ agent });
+        await copilotKitRef.current.runAgent({ agent: agentRef.current });
       } catch (err) {
         console.error("[auto-show] runAgent failed", err);
       }
     };
     autoShow();
-  }, [urlCheckpointId, currentElements, agent, copilotkit]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlCheckpointId, currentElements]);
 
   useAgentContext({
     description: activeId
@@ -451,6 +498,7 @@ function HomeContent() {
         {urlCheckpointId && <CheckpointBanner checkpointId={urlCheckpointId} />}
         <div className="flex-1 flex justify-center overflow-hidden min-h-0 pt-28">
           <div className="w-full max-w-2xl h-full flex flex-col">
+            <AgentActivityBar />
             <CopilotChat
               className="flex-1 min-h-0"
               labels={{

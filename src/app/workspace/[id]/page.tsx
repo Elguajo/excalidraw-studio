@@ -116,6 +116,7 @@ export default function WorkspacePage() {
           return { elements: [], title: "Untitled" } as {
             elements: ExcalidrawElement[];
             title?: string;
+            redirectTo?: string;
           };
         }
         if (!r.ok) throw new Error("Failed to load workspace");

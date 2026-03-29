@@ -13,17 +13,30 @@ export function McpWidgetZoom() {
   const processed = useRef(new WeakSet<Element>());
 
   useEffect(() => {
+    // ── Forward iframe console logs to main page console ──────────────────
+    // Widget (mcp-app.tsx) runs in a cross-origin iframe; its console.log calls
+    // are invisible in the main DevTools. This listener bridges them.
+    const iframeLogHandler = (e: MessageEvent) => {
+      if (e.data?.type === "excalidraw-log") {
+        const t = new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
+        console.log(`[widget ${t}]`, ...e.data.args);
+      }
+    };
+    window.addEventListener("message", iframeLogHandler);
+
     function injectControls(container: HTMLElement) {
       if (processed.current.has(container)) return;
       processed.current.add(container);
+      console.log("[zoom] injectControls: container found", container);
 
       let zoom = 1;
-      const iframe = container.querySelector("iframe") as HTMLIFrameElement | null;
-      if (!iframe) return;
+      const iframeEl = container.querySelector("iframe");
+      if (!iframeEl) return;
+      const iframe = iframeEl as HTMLIFrameElement;
 
       // Wrap iframe in a zoom-clip div
       const clipDiv = document.createElement("div");
-      clipDiv.style.overflow = "auto";
+      clipDiv.style.overflow = "hidden"; // no scrollbar tracks in inline view
       clipDiv.style.position = "relative";
       clipDiv.style.width = "100%";
       clipDiv.style.flex = "1";
@@ -32,36 +45,52 @@ export function McpWidgetZoom() {
       clipDiv.appendChild(iframe);
 
       const TOOLBAR_H = 40;
-      const MAX_H = 900;
       let isFullscreen = false;
 
-      // Resize container + iframe to fit diagram content height
+      // Resize container + iframe to fit diagram content height (no cap — show full diagram)
       function sizeWidget(diagramH: number) {
+        console.log(`[zoom] sizeWidget(${diagramH}) isFullscreen=${isFullscreen}`);
         if (isFullscreen) {
-          // In fullscreen: only update iframe height so clipDiv can scroll
-          if (iframe) iframe.style.height = `${diagramH}px`;
+          iframe.style.height = `${diagramH}px`;
+          clipDiv.style.height = `${diagramH}px`;
           return;
         }
-        const total = Math.min(diagramH + TOOLBAR_H, MAX_H);
+        const total = diagramH + TOOLBAR_H;
         container.style.height = `${total}px`;
         container.style.minHeight = `${total}px`;
-        clipDiv.style.height = `${total - TOOLBAR_H}px`;
-        if (iframe) iframe.style.height = `${total - TOOLBAR_H}px`;
+        clipDiv.style.height = `${diagramH}px`;
+        if (iframe) iframe.style.height = `${diagramH}px`;
       }
 
-      // Initial size: 4:3 default until first render
+      // Show widget immediately as a blank white box — diagram elements draw in progressively.
+      // read_me is now a plain server.tool() so it no longer pre-warms the iframe.
       const initW = container.offsetWidth || 600;
       let lastDiagramH = Math.round((initW * 3) / 4);
       sizeWidget(lastDiagramH);
 
-      // Update size when widget reports natural dimensions
+      // Update size as diagram renders (widget sends natural dimensions)
       const dimHandler = (e: MessageEvent) => {
         if (e.data?.type === "excalidraw-widget-dimensions") {
-          lastDiagramH = e.data.height as number;
-          sizeWidget(lastDiagramH);
+          const h = e.data.height as number;
+          console.log(`[zoom] excalidraw-widget-dimensions: h=${h} lastDiagramH=${lastDiagramH} isFullscreen=${isFullscreen}`);
+          if (h > 0) {
+            lastDiagramH = h;
+            sizeWidget(lastDiagramH);
+          }
         }
       };
       window.addEventListener("message", dimHandler);
+
+      // Wheel proxy: the iframe captures all wheel events, so the widget forwards them here.
+      const wheelHandler = (e: MessageEvent) => {
+        if (e.data?.type === "excalidraw-wheel") {
+          if (isFullscreen) {
+            clipDiv.scrollTop += e.data.deltaY as number;
+            clipDiv.scrollLeft += e.data.deltaX as number;
+          }
+        }
+      };
+      window.addEventListener("message", wheelHandler);
 
       // Toolbar
       const toolbar = document.createElement("div");
@@ -197,11 +226,24 @@ export function McpWidgetZoom() {
           return row;
         }
 
-        const copyRow = makeExportRow("📋", "Copy to clipboard", "Copy as PNG — paste anywhere", () => {
+        // Copy row — stays open and shows confirmation instead of closing immediately
+        const copyRow = document.createElement("button");
+        copyRow.style.cssText = btnRowStyle;
+        copyRow.innerHTML = `<span style="font-size:20px;width:32px;text-align:center;">📋</span><span><span style="display:block;font-size:13px;font-weight:600;color:#111;">Copy to clipboard</span><span style="display:block;font-size:11px;color:#9ca3af;margin-top:1px;">Copy as PNG — paste anywhere</span></span>`;
+        copyRow.addEventListener("mouseenter", () => { copyRow.style.borderColor = "#6965db"; copyRow.style.background = "#6965db08"; });
+        copyRow.addEventListener("mouseleave", () => { copyRow.style.borderColor = "#e5e7eb"; copyRow.style.background = "#fff"; });
+        copyRow.addEventListener("click", () => {
           svgToCanvas(svgStr, "image/png", "#ffffff", (canvas) => {
             canvas.toBlob(async (blob) => {
               if (!blob) return;
-              await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+              try {
+                await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+                copyRow.style.cssText = btnRowStyle + "border-color:#22c55e !important;background:#f0fdf4;pointer-events:none;";
+                copyRow.innerHTML = `<span style="font-size:18px;width:32px;text-align:center;">✓</span><span><span style="display:block;font-size:13px;font-weight:600;color:#16a34a;">Copied to clipboard!</span><span style="display:block;font-size:11px;color:#9ca3af;margin-top:1px;">PNG ready to paste</span></span>`;
+                setTimeout(() => overlay.remove(), 1500);
+              } catch {
+                copyRow.innerHTML = `<span style="font-size:18px;width:32px;text-align:center;">⚠️</span><span><span style="display:block;font-size:13px;font-weight:600;color:#ef4444;">Copy failed — try PNG download</span></span>`;
+              }
             }, "image/png");
           });
         });
@@ -263,17 +305,17 @@ export function McpWidgetZoom() {
       let originalContainerCssText = "";
       expandBtn.addEventListener("click", () => {
         isFullscreen = !isFullscreen;
+        console.log(`[zoom] expand toggled: isFullscreen=${isFullscreen} lastDiagramH=${lastDiagramH}`);
         if (isFullscreen) {
           originalContainerCssText = container.style.cssText;
           container.style.cssText =
-            "position:fixed;top:10%;left:12.5%;width:75%;height:80%;z-index:9999;" +
+            "position:fixed;top:3%;left:5%;width:90%;height:94%;z-index:9999;" +
             "background:var(--background,#fff);border-radius:16px;" +
             "box-shadow:0 25px 50px -12px rgba(0,0,0,0.25);display:flex;flex-direction:column;overflow:hidden;";
           clipDiv.style.flex = "1";
-          clipDiv.style.minHeight = "0"; // required for flex child to scroll
-          clipDiv.style.height = "0";    // let flex determine height, not content
+          clipDiv.style.minHeight = "0";
+          clipDiv.style.height = `${lastDiagramH}px`;
           clipDiv.style.overflow = "auto";
-          // Restore natural diagram height so clipDiv can scroll when taller than viewport
           sizeWidget(lastDiagramH);
           expandBtn.textContent = "✕ Close";
           const backdrop = document.createElement("div");
@@ -283,11 +325,13 @@ export function McpWidgetZoom() {
           backdrop.addEventListener("click", () => expandBtn.click());
           document.body.appendChild(backdrop);
         } else {
+          console.log(`[zoom] expand closing, restoring inline state`);
           container.style.cssText = originalContainerCssText;
           clipDiv.style.flex = "";
           clipDiv.style.minHeight = "";
           clipDiv.style.overflow = "auto";
-          clipDiv.style.height = container.dataset.originalHeight || "auto";
+          clipDiv.style.height = `${lastDiagramH}px`;
+          iframe.style.height = `${lastDiagramH}px`;
           expandBtn.textContent = "⤢ Expand";
           document.getElementById("mcp-zoom-backdrop")?.remove();
         }
@@ -320,7 +364,10 @@ export function McpWidgetZoom() {
     observer.observe(document.body, { childList: true, subtree: true });
     scanForMcpWidgets();
 
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("message", iframeLogHandler);
+    };
   }, []);
 
   return null;

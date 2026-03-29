@@ -33,6 +33,17 @@ function fsLog(msg: string) {
   if (_logFn) _logFn(msg);
 }
 
+// wLog: logs to both the SDK host file AND the parent page's browser console.
+// The parent (mcp-widget-zoom.tsx) listens for "excalidraw-log" and console.logs it.
+function wLog(...args: any[]) {
+  const msg = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
+  fsLog(msg);
+  try {
+    window.parent.postMessage({ type: "excalidraw-log", args }, "*");
+  } catch {}
+  console.log("[widget]", ...args); // also visible in iframe console
+}
+
 // ============================================================
 // Shared helpers
 // ============================================================
@@ -388,7 +399,8 @@ function DiagramView({
     }
     const observer = new ResizeObserver(([entry]) => {
       const w = entry.contentRect.width;
-      if (w > 0 && svgRef.current) {
+      // Only report dimensions when SVG content exists — prevents black box during pre-warm
+      if (w > 0 && svgRef.current && svgRef.current.querySelector("svg")) {
         const h = Math.round(w * naturalAspectRef.current);
         svgRef.current.style.height = `${h}px`;
         window.parent.postMessage({ type: "excalidraw-widget-dimensions", height: h }, "*");
@@ -497,10 +509,11 @@ function DiagramView({
 
   const renderSvgPreview = useCallback(
     async (els: any[], viewport: ViewportRect | null, baseElements?: any[]) => {
+      wLog(`renderSvgPreview: els=${els.length} base=${baseElements?.length ?? 0} viewport=${viewport ? `${viewport.width}x${viewport.height}@(${viewport.x},${viewport.y})` : "auto-fit"}`);
       if ((els.length === 0 && !baseElements?.length) || !svgRef.current)
         return;
+      const t0 = performance.now();
       try {
-        // Wait for Virgil font to load before computing text metrics
         await ensureFontsLoaded();
 
         // Convert new elements (raw → Excalidraw format)
@@ -598,8 +611,9 @@ function DiagramView({
             }
           }
         }
-      } catch {
-        // export can fail on partial/malformed elements
+        wLog(`renderSvgPreview: done in ${(performance.now() - t0).toFixed(0)}ms — SVG inserted`);
+      } catch (err) {
+        wLog(`renderSvgPreview: exportToSvg FAILED — ${err}`);
       }
     },
     [applyViewBox, animateViewBox, applyZoom],
@@ -609,9 +623,8 @@ function DiagramView({
     if (!toolInput) return;
     const raw = toolInput.elements;
     if (!raw) return;
-
-    // Parse elements from string or array
     const str = typeof raw === "string" ? raw : JSON.stringify(raw);
+    wLog(`DiagramView useEffect: isFinal=${isFinal} _autoFit=${!!(toolInput as any)._autoFit} strLen=${str.length}`);
 
     if (isFinal) {
       // Final input — parse complete JSON, render ALL elements
@@ -657,7 +670,11 @@ function DiagramView({
         captureInitialElements(allConverted);
         // Only set elements if user hasn't edited yet (editedElements means user edits exist)
         if (!editedElements) onElements?.(allConverted);
-        if (!editedElements) renderSvgPreview(drawElements, viewport, base);
+        // On final render, pass null viewport so exportToSvg auto-fits all elements.
+        // The cameraUpdate viewport is only useful for the animated in-progress reveal;
+        // for the static final result we always want to see the full diagram.
+        const finalViewport = (toolInput as any)?._autoFit ? null : viewport;
+        if (!editedElements) renderSvgPreview(drawElements, finalViewport, base);
       };
       doFinal();
       return;
@@ -982,6 +999,7 @@ const discordIcon = (
 export function ExcalidrawAppCore({ app }: { app: App }) {
   const [toolInput, setToolInput] = useState<any>(null);
   const [inputIsFinal, setInputIsFinal] = useState(false);
+  const [drawStatus, setDrawStatus] = useState<string | null>(null);
   const [displayMode, setDisplayMode] = useState<"inline" | "fullscreen">(
     "inline",
   );
@@ -995,6 +1013,11 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
   const svgViewportRef = useRef<ViewportRect | null>(null);
   const elementsRef = useRef<any[]>([]);
   const checkpointIdRef = useRef<string | null>(null);
+  // Client-side accumulation for draw_element (section-by-section reveal)
+  const drawSessionRef = useRef<string | null>(null);
+  const drawAccumulatedRef = useRef<any[]>([]);
+  const drawStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const progressiveRevealedRef = useRef<number>(0);
 
   const toggleFullscreen = useCallback(async () => {
     if (!appRef.current) return;
@@ -1107,6 +1130,21 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
     elementsRef.current = elements;
   }, [elements]);
 
+  // Forward wheel events to parent so the expand modal clipDiv can scroll.
+  // The iframe captures all wheel events; this proxy lets the parent handle them.
+  useEffect(() => {
+    const handleWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) {
+        window.parent.postMessage(
+          { type: "excalidraw-wheel", deltaY: e.deltaY, deltaX: e.deltaX },
+          "*",
+        );
+      }
+    };
+    document.addEventListener("wheel", handleWheel, { passive: true });
+    return () => document.removeEventListener("wheel", handleWheel);
+  }, []);
+
   // Export is handled by DiagramView (has direct access to rendered excalidrawEls)
 
   // Set up MCP event handlers when app is provided
@@ -1142,32 +1180,170 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
 
     app.ontoolinputpartial = async (input) => {
       const args = (input as any)?.arguments || input;
+      wLog(`ontoolinputpartial: sid=${args.sessionId} elemLen=${String(args.elements ?? "").length}`);
+      if (!args.elements && args.sessionId === undefined) return;
+      if (args.sessionId !== undefined) {
+        if (args.sessionId !== drawSessionRef.current) {
+          drawSessionRef.current = args.sessionId;
+          drawAccumulatedRef.current = [];
+        }
+        if (drawStatusTimerRef.current) clearTimeout(drawStatusTimerRef.current);
+        setDrawStatus("Drawing…");
+        const partialNew = excludeIncompleteLastItem(
+          parsePartialElements(args.elements || "[]")
+        );
+        const combined = [...drawAccumulatedRef.current, ...partialNew];
+        wLog(`ontoolinputpartial: combined=${combined.length} els (partial path)`);
+        if (combined.length > 0) {
+          setInputIsFinal(false);
+          setToolInput({ elements: JSON.stringify(combined) });
+        }
+        return;
+      }
       setInputIsFinal(false);
       setToolInput(args);
     };
 
     app.ontoolinput = async (input) => {
       const args = (input as any)?.arguments || input;
+      const t0 = performance.now();
+      wLog(`ontoolinput: sid=${args.sessionId ?? "none"} elemLen=${String(args.elements ?? "").length} t=${t0.toFixed(0)}ms`);
+      if (!args.elements && args.sessionId === undefined) {
+        wLog(`ontoolinput: skipping — no elements and no sessionId`);
+        return;
+      }
+      if (args.sessionId !== undefined) {
+        // draw_element complete
+        if (args.sessionId !== drawSessionRef.current) {
+          wLog(`ontoolinput: NEW SESSION ${args.sessionId} (was ${drawSessionRef.current})`);
+          drawSessionRef.current = args.sessionId;
+          drawAccumulatedRef.current = [];
+          progressiveRevealedRef.current = 0;
+        } else {
+          wLog(`ontoolinput: continuing session ${args.sessionId}`);
+        }
+        const newEls = parsePartialElements(args.elements || "[]");
+        wLog(`ontoolinput: parsed ${newEls.length} new elements — types: [${newEls.map((e: any) => e.type).join(", ")}]`);
+        drawAccumulatedRef.current = [...drawAccumulatedRef.current, ...newEls];
+
+        const allEls = drawAccumulatedRef.current;
+        const alreadyShown = progressiveRevealedRef.current;
+        const toReveal = allEls.slice(alreadyShown);
+        wLog(`ontoolinput: total=${allEls.length} alreadyShown=${alreadyShown} toReveal=${toReveal.length}`);
+
+        // Split into sections at cameraUpdate boundaries
+        const sections: any[][] = [];
+        let buf: any[] = [];
+        for (const el of toReveal) {
+          if (el.type === "cameraUpdate" && buf.length > 0) {
+            sections.push(buf);
+            buf = [el];
+          } else {
+            buf.push(el);
+          }
+        }
+        if (buf.length > 0) sections.push(buf);
+        wLog(`ontoolinput: ${sections.length} sections — ${sections.map((s, i) => `s${i}:[${s.map((e: any) => e.type).join(",")}]`).join("  ")}`);
+
+        if (sections.length === 0) {
+          wLog(`ontoolinput: no sections — rendering all ${allEls.length} at once`);
+          setInputIsFinal(true);
+          setToolInput({ elements: JSON.stringify(allEls), _autoFit: true });
+          return;
+        }
+
+        // Element-by-element: 200ms/element + 400ms gap between sections
+        const ELEM_DELAY_MS = 800;
+        const SECTION_GAP_MS = 1200;
+        let totalDelay = 0;
+        let cumulativeCount = alreadyShown;
+
+        sections.forEach((section, sectionIdx) => {
+          if (sectionIdx > 0) totalDelay += SECTION_GAP_MS;
+
+          section.forEach((_el, elIdx) => {
+            cumulativeCount++;
+            const thisCount = cumulativeCount;
+            const isLast = thisCount >= allEls.length;
+            const scheduleAt = totalDelay + elIdx * ELEM_DELAY_MS;
+            const elType = (_el as any).type ?? "?";
+
+            wLog(`ontoolinput: scheduling s${sectionIdx}[${elIdx}] type=${elType} count=${thisCount}/${allEls.length} at t+${scheduleAt}ms isLast=${isLast}`);
+
+            setTimeout(() => {
+              const now = performance.now();
+              progressiveRevealedRef.current = thisCount;
+              const visible = allEls.slice(0, thisCount);
+              wLog(`RENDER s${sectionIdx}[${elIdx}] type=${elType} visible=${visible.length}/${allEls.length} t=${now.toFixed(0)}ms isLast=${isLast}`);
+              if (isLast) {
+                setInputIsFinal(true);
+                setToolInput({ elements: JSON.stringify(visible), _autoFit: true });
+              } else {
+                setInputIsFinal(false);
+                setToolInput({ elements: JSON.stringify(visible) });
+              }
+            }, scheduleAt);
+          });
+
+          totalDelay += section.length * ELEM_DELAY_MS;
+        });
+
+        wLog(`ontoolinput: all ${sections.reduce((s, sec) => s + sec.length, 0)} elements scheduled, total anim time ~${totalDelay}ms`);
+        return;
+      }
+      // create_view (no sessionId)
+      wLog(`ontoolinput: create_view path — setting final input with _autoFit`);
       setInputIsFinal(true);
-      setToolInput(args);
+      setToolInput({ ...args, _autoFit: true });
     };
 
     app.ontoolresult = (result: any) => {
-      const cpId = (result.structuredContent as { checkpointId?: string })
-        ?.checkpointId;
+      const sc = result.structuredContent as {
+        checkpointId?: string;
+        sessionId?: string;
+      };
+      wLog(`ontoolresult: sessionId=${sc?.sessionId ?? "none"} checkpointId=${sc?.checkpointId ?? "none"}`);
+
+      if (sc?.sessionId !== undefined) {
+        // draw_element result: track checkpointId but defer diagram-ready
+        // so the agent can continue calling draw_element without interruption.
+        // Fire after 4s of inactivity (cancelled by ontoolinputpartial).
+        const cpId = sc?.checkpointId;
+        if (cpId) checkpointIdRef.current = cpId;
+        if (drawStatusTimerRef.current) clearTimeout(drawStatusTimerRef.current);
+        drawStatusTimerRef.current = setTimeout(() => {
+          setDrawStatus(null);
+          const finalCpId = checkpointIdRef.current;
+          if (finalCpId) {
+            setCheckpointId(finalCpId);
+            setStorageKey(finalCpId);
+            const persisted = loadPersistedElements();
+            if (persisted && persisted.length > 0) {
+              elementsRef.current = persisted;
+              setElements(persisted);
+              setUserEdits(persisted);
+            }
+            window.parent.postMessage(
+              { type: "excalidraw-diagram-ready", checkpointId: finalCpId },
+              "*",
+            );
+          }
+        }, 4000);
+        return;
+      }
+
+      // create_view result: fire diagram-ready immediately
+      const cpId = sc?.checkpointId;
       if (cpId) {
         checkpointIdRef.current = cpId;
         setCheckpointId(cpId);
-        // Use checkpointId as localStorage key for persisting user edits
         setStorageKey(cpId);
-        // Check for persisted edits from a previous fullscreen session
         const persisted = loadPersistedElements();
         if (persisted && persisted.length > 0) {
           elementsRef.current = persisted;
           setElements(persisted);
           setUserEdits(persisted);
         }
-        // Notify parent page so it can replace the session workspace
         window.parent.postMessage(
           { type: "excalidraw-diagram-ready", checkpointId: cpId },
           "*",
@@ -1188,6 +1364,23 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
           : undefined
       }
     >
+      {drawStatus && displayMode === "inline" && (
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "4px 12px",
+          fontSize: 11,
+          color: "#6965db",
+          background: "#f5f3ff",
+          borderBottom: "1px solid #ede9fe",
+        }}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ animation: "spin 1s linear infinite", flexShrink: 0 }}>
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+          <span>{drawStatus}</span>
+        </div>
+      )}
       {displayMode === "inline" && (
         <div className="toolbar">
           <ShareButton

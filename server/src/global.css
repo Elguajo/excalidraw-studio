@@ -219,6 +219,11 @@ body {
   }
 }
 
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* Stroke draw-on animation for line elements */
 .excalidraw-container svg :where(path, line, polyline, polygon) {
   animation: strokeDraw 0.35s ease-out forwards;
