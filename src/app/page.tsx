@@ -14,6 +14,7 @@ import { useEffect, useRef, useState, Suspense } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams, useRouter } from "next/navigation";
 import { McpWidgetZoom } from "@/components/mcp-widget-zoom";
+import { SKILLS, DEFAULT_SKILL_ID } from "@/skills";
 
 const CARDS = [
   {
@@ -281,6 +282,60 @@ function DiagramSession({
   return null;
 }
 
+function SettingsPanel({
+  isOpen,
+  onClose,
+  selectedSkillId,
+  onSelect,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  selectedSkillId: string;
+  onSelect: (id: string) => void;
+}) {
+  if (!isOpen) return null;
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/20 z-40" onClick={onClose} />
+      <div className="fixed inset-y-0 right-0 w-[360px] bg-white shadow-2xl z-50 flex flex-col border-l border-gray-100">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0">
+          <span className="font-semibold text-gray-800 text-sm">Settings</span>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-700 transition-colors cursor-pointer"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          <p className="text-[11px] font-medium text-gray-400 tracking-wider uppercase mb-3">Diagram Style</p>
+          <div className="grid grid-cols-2 gap-2">
+            {SKILLS.map(skill => (
+              <button
+                key={skill.id}
+                onClick={() => { onSelect(skill.id); onClose(); }}
+                className={`text-left p-3 rounded-xl border transition-all cursor-pointer ${
+                  selectedSkillId === skill.id
+                    ? "border-[#6965db] bg-[#6965db]/5 ring-1 ring-[#6965db]/30"
+                    : "border-gray-100 hover:border-[#6965db]/30 hover:bg-gray-50"
+                }`}
+              >
+                <p className={`text-sm font-semibold leading-snug ${selectedSkillId === skill.id ? "text-[#6965db]" : "text-gray-800"}`}>
+                  {skill.name}
+                </p>
+                <p className="text-xs text-gray-400 leading-snug mt-0.5">{skill.tagline}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function CheckpointBanner({ checkpointId }: { checkpointId: string }) {
   const router = useRouter();
   return (
@@ -380,6 +435,25 @@ function HomeContent() {
     string | undefined
   >(urlCheckpointId);
 
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [selectedSkillId, setSelectedSkillId] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem("diagram-skill");
+      return SKILLS.some(s => s.id === stored) ? stored! : DEFAULT_SKILL_ID;
+    }
+    return DEFAULT_SKILL_ID;
+  });
+
+  useEffect(() => {
+    localStorage.setItem("diagram-skill", selectedSkillId);
+  }, [selectedSkillId]);
+
+  const selectedSkill = SKILLS.find(s => s.id === selectedSkillId) ?? SKILLS[0];
+  useAgentContext({
+    description: `DIAGRAM STYLE GUIDE — ${selectedSkill.name}: ${selectedSkill.tagline}`,
+    value: selectedSkill.prompt,
+  });
+
   // Reset session when the URL checkpoint changes
   useEffect(() => {
     setSessionCheckpointId(urlCheckpointId);
@@ -471,8 +545,24 @@ function HomeContent() {
               </svg>
               Workspaces
             </Link>
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="flex items-center justify-center w-8 h-8 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-50 border border-transparent hover:border-gray-200 transition-colors cursor-pointer"
+              title="Settings"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+            </button>
           </div>
         </nav>
+        <SettingsPanel
+          isOpen={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          selectedSkillId={selectedSkillId}
+          onSelect={setSelectedSkillId}
+        />
         {urlCheckpointId && <CheckpointBanner checkpointId={urlCheckpointId} />}
         <div className="flex-1 flex justify-center overflow-hidden min-h-0 pt-28">
           <div className="w-full max-w-2xl h-full flex flex-col">
