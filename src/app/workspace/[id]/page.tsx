@@ -20,35 +20,44 @@ const Excalidraw = dynamic(
 async function prepareElements(
   normalized: any[],
 ): Promise<ExcalidrawElement[]> {
-  const hasLabels = normalized.some((el: any) => el.label != null);
-  if (!hasLabels) return normalized as ExcalidrawElement[];
-
-  const { convertToExcalidrawElements, FONT_FAMILY } =
+  const { convertToExcalidrawElements, FONT_FAMILY, restore } =
     await import("@excalidraw/excalidraw");
-  const excalifont = (FONT_FAMILY as any).Excalifont ?? 1;
-  const fontName = excalifont > 3 ? "Excalifont" : "Virgil";
-  await Promise.race([
-    document.fonts.load(`16px "${fontName}"`),
-    new Promise<void>((r) => setTimeout(r, 3000)),
-  ]);
-  const withFonts = normalized.map((el: any) =>
-    el.label
-      ? {
-          ...el,
-          label: {
-            textAlign: "center",
-            verticalAlign: "middle",
-            fontFamily: excalifont,
-            ...el.label,
-          },
-        }
-      : el.type === "text"
-        ? { ...el, fontFamily: el.fontFamily ?? excalifont }
-        : el,
-  );
-  return convertToExcalidrawElements(withFonts as any, {
-    regenerateIds: false,
-  }) as ExcalidrawElement[];
+
+  const hasLabels = normalized.some((el: any) => el.label != null);
+  let els: any[];
+
+  if (hasLabels) {
+    const excalifont = (FONT_FAMILY as any).Excalifont ?? 1;
+    const fontName = excalifont > 3 ? "Excalifont" : "Virgil";
+    await Promise.race([
+      document.fonts.load(`16px "${fontName}"`),
+      new Promise<void>((r) => setTimeout(r, 3000)),
+    ]);
+    const withFonts = normalized.map((el: any) =>
+      el.label
+        ? {
+            ...el,
+            label: {
+              textAlign: "center",
+              verticalAlign: "middle",
+              fontFamily: excalifont,
+              ...el.label,
+            },
+          }
+        : el.type === "text"
+          ? { ...el, fontFamily: el.fontFamily ?? excalifont }
+          : el,
+    );
+    els = convertToExcalidrawElements(withFonts as any, {
+      regenerateIds: false,
+    }) as any[];
+  } else {
+    els = normalized;
+  }
+
+  // Normalize linear element points to [0,0] origin (avoids "not normalized" error)
+  const { elements: restored } = restore({ elements: els }, null, null);
+  return restored as ExcalidrawElement[];
 }
 
 function LoadingCanvas() {

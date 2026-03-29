@@ -27,6 +27,7 @@ export function McpWidgetZoom() {
       clipDiv.style.position = "relative";
       clipDiv.style.width = "100%";
       clipDiv.style.flex = "1";
+      clipDiv.style.background = "#fff";
       iframe.parentNode?.insertBefore(clipDiv, iframe);
       clipDiv.appendChild(iframe);
 
@@ -50,12 +51,14 @@ export function McpWidgetZoom() {
 
       // Initial size: 4:3 default until first render
       const initW = container.offsetWidth || 600;
-      sizeWidget(Math.round((initW * 3) / 4));
+      let lastDiagramH = Math.round((initW * 3) / 4);
+      sizeWidget(lastDiagramH);
 
       // Update size when widget reports natural dimensions
       const dimHandler = (e: MessageEvent) => {
         if (e.data?.type === "excalidraw-widget-dimensions") {
-          sizeWidget(e.data.height as number);
+          lastDiagramH = e.data.height as number;
+          sizeWidget(lastDiagramH);
         }
       };
       window.addEventListener("message", dimHandler);
@@ -270,6 +273,8 @@ export function McpWidgetZoom() {
           clipDiv.style.minHeight = "0"; // required for flex child to scroll
           clipDiv.style.height = "0";    // let flex determine height, not content
           clipDiv.style.overflow = "auto";
+          // Restore natural diagram height so clipDiv can scroll when taller than viewport
+          sizeWidget(lastDiagramH);
           expandBtn.textContent = "✕ Close";
           const backdrop = document.createElement("div");
           backdrop.id = "mcp-zoom-backdrop";
