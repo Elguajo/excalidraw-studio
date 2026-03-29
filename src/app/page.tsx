@@ -239,11 +239,6 @@ function DiagramSession({
           .describe("The checkpointId returned by create_view"),
       }),
       handler: async ({ newCheckpointId }) => {
-        console.log("[update_session_workspace] called", {
-          newCheckpointId,
-          sessionCheckpointId,
-          urlCheckpointId,
-        });
         try {
           const targetId = sessionCheckpointId ?? urlCheckpointId ?? null;
           const newData = await fetch(
@@ -254,10 +249,6 @@ function DiagramSession({
             // Fresh chat, first diagram — use the new checkpoint as-is
             setCurrentElements(newData.elements ?? []);
             onSessionUpdate(newCheckpointId);
-            console.log(
-              "[update_session_workspace] fresh session →",
-              newCheckpointId,
-            );
             return `Workspace ${newCheckpointId} is now the active diagram. For future edits, update this workspace.`;
           }
 
@@ -277,12 +268,6 @@ function DiagramSession({
           });
           setCurrentElements(newData.elements ?? []);
           onSessionUpdate(targetId);
-          console.log(
-            "[update_session_workspace] replaced",
-            targetId,
-            "soft-deleted",
-            newCheckpointId,
-          );
           return `Workspace ${targetId} updated with the latest diagram.`;
         } catch (e) {
           console.error("[update_session_workspace] error", e);
@@ -412,7 +397,6 @@ function HomeContent() {
       if (e.data?.type === "excalidraw-diagram-ready" && e.data?.checkpointId) {
         const newCheckpointId: string = e.data.checkpointId;
         const targetId = sessionCheckpointId ?? urlCheckpointId ?? null;
-        console.log("[diagram-ready]", { newCheckpointId, targetId });
 
         if (!targetId) {
           // new checkpoint becomes the session
@@ -434,12 +418,6 @@ function HomeContent() {
           await fetch(`/api/checkpoint/${newCheckpointId}?hard=true`, {
             method: "DELETE",
           });
-          console.log(
-            "[diagram-ready] replaced",
-            targetId,
-            "deleted",
-            newCheckpointId,
-          );
         } catch (err) {
           console.error("[diagram-ready] error", err);
         }
@@ -459,7 +437,7 @@ function HomeContent() {
       />
       <main className="h-screen w-screen flex flex-col bg-white">
         <nav className="flex items-center justify-between px-6 py-3 border-b border-gray-100 shrink-0">
-          <a
+          <Link
             href="/"
             className="flex items-center gap-2 select-none cursor-pointer"
           >
@@ -471,7 +449,7 @@ function HomeContent() {
               <span className="text-gray-400 font-light mx-1">x</span>{" "}
               CopilotKit
             </span>
-          </a>
+          </Link>
           <div className="flex items-center gap-4">
             <Link
               href="/workspaces"

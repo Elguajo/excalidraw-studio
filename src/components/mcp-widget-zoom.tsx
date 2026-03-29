@@ -13,21 +13,14 @@ export function McpWidgetZoom() {
   const processed = useRef(new WeakSet<Element>());
 
   useEffect(() => {
-    // ── Forward iframe console logs to main page console ──────────────────
-    // Widget (mcp-app.tsx) runs in a cross-origin iframe; its console.log calls
-    // are invisible in the main DevTools. This listener bridges them.
     const iframeLogHandler = (e: MessageEvent) => {
-      if (e.data?.type === "excalidraw-log") {
-        const t = new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
-        console.log(`[widget ${t}]`, ...e.data.args);
-      }
+      void e; // bridge removed — logs silenced
     };
     window.addEventListener("message", iframeLogHandler);
 
     function injectControls(container: HTMLElement) {
       if (processed.current.has(container)) return;
       processed.current.add(container);
-      console.log("[zoom] injectControls: container found", container);
 
       let zoom = 1;
       const iframeEl = container.querySelector("iframe");
@@ -49,7 +42,6 @@ export function McpWidgetZoom() {
 
       // Resize container + iframe to fit diagram content height (no cap — show full diagram)
       function sizeWidget(diagramH: number) {
-        console.log(`[zoom] sizeWidget(${diagramH}) isFullscreen=${isFullscreen}`);
         if (isFullscreen) {
           iframe.style.height = `${diagramH}px`;
           clipDiv.style.height = `${diagramH}px`;
@@ -72,7 +64,6 @@ export function McpWidgetZoom() {
       const dimHandler = (e: MessageEvent) => {
         if (e.data?.type === "excalidraw-widget-dimensions") {
           const h = e.data.height as number;
-          console.log(`[zoom] excalidraw-widget-dimensions: h=${h} lastDiagramH=${lastDiagramH} isFullscreen=${isFullscreen}`);
           if (h > 0) {
             lastDiagramH = h;
             sizeWidget(lastDiagramH);
@@ -305,7 +296,6 @@ export function McpWidgetZoom() {
       let originalContainerCssText = "";
       expandBtn.addEventListener("click", () => {
         isFullscreen = !isFullscreen;
-        console.log(`[zoom] expand toggled: isFullscreen=${isFullscreen} lastDiagramH=${lastDiagramH}`);
         if (isFullscreen) {
           originalContainerCssText = container.style.cssText;
           container.style.cssText =
@@ -325,7 +315,6 @@ export function McpWidgetZoom() {
           backdrop.addEventListener("click", () => expandBtn.click());
           document.body.appendChild(backdrop);
         } else {
-          console.log(`[zoom] expand closing, restoring inline state`);
           container.style.cssText = originalContainerCssText;
           clipDiv.style.flex = "";
           clipDiv.style.minHeight = "";

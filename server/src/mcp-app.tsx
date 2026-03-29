@@ -33,15 +33,9 @@ function fsLog(msg: string) {
   if (_logFn) _logFn(msg);
 }
 
-// wLog: logs to both the SDK host file AND the parent page's browser console.
-// The parent (mcp-widget-zoom.tsx) listens for "excalidraw-log" and console.logs it.
 function wLog(...args: any[]) {
   const msg = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
   fsLog(msg);
-  try {
-    window.parent.postMessage({ type: "excalidraw-log", args }, "*");
-  } catch {}
-  console.log("[widget]", ...args); // also visible in iframe console
 }
 
 // ============================================================
