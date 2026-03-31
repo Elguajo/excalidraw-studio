@@ -146,7 +146,7 @@ export default function WorkspacesPage() {
     e.preventDefault();
     e.stopPropagation();
     setEntries((prev) => prev?.filter((entry) => entry.id !== id) ?? prev);
-    fetch(`/api/checkpoint/${id}`, { method: "DELETE" }).catch(() => {});
+    fetch(`/api/checkpoint/${id}?hard=true`, { method: "DELETE" }).catch(() => {});
   }
 
   function handleTitleSave(id: string, title: string) {

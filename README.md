@@ -1,20 +1,27 @@
 # Excalidraw Studio
 
-Describe anything and watch it draw itself in chat, element by element. Refine it in chat or pop it open as a full Excalidraw canvas - draw more yourself, bring it back, keep going. Powered by [CopilotKit](https://copilotkit.ai) and modified [Excalidraw MCP server](https://github.com/excalidraw/excalidraw-mcp).
+Describe anything and watch it draw itself in chat, element by element. Refine it in chat or open it as a full Excalidraw canvas — draw more yourself, bring it back, keep iterating. Powered by [CopilotKit](https://copilotkit.ai) and a custom [Excalidraw MCP server](https://github.com/excalidraw/excalidraw-mcp).
 
-https://github.com/user-attachments/assets/18dd56de-6f14-4a1d-b743-52fccf145bbe
+https://github.com/user-attachments/assets/4cdf3662-4b02-4df6-9e2c-66518be7ea79
 
 ## What It Does
 
-- Diagrams draw themselves live in chat via [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview) - each element appears one by one
-- Every result opens as a local workspace - drag, reshape, connect, and annotate freely
-- Every iteration in a chat updates the **same workspace** — start a new chat to start a fresh one
-- **Edit with AI** - open any saved workspace, click "Edit with AI" and the diagram loads straight into chat. Describe changes, they sync back to the workspace
-- **Blank canvas** - create a blank canvas from the workspaces page, draw yourself, and bring it to chat to edit with AI
-- **Skill picker** - 5 diagram modes available: Architecture, Sequence Diagram, Wireframe, Freehand Sketch, Storyboard. Choice persists across sessions
-- **Export** - PNG, JPEG, SVG download or copy to clipboard right from the chat toolbar. Zoom and expand diagrams inline without leaving chat
-- Every diagram auto-saves to disk, no database needed, Redis supported for Vercel deployments
-- Workspaces page to browse, rename, and delete all your saved diagrams
+- **Live diagram rendering** : diagrams draw themselves inside chat as the AI responds, element by element.
+- **Local Canvas** : every diagram has a "workspace" button. Click it and the canvas opens locally — drag, reshape, annotate, connect freely.
+- **Workspaces** : every diagram auto-saves. Browse, rename, and delete all your saved diagrams from the Workspaces page. Each one is a checkpoint you can return to anytime.
+- **Blank canvas** : create an empty canvas from Workspaces, draw something yourself, then bring it back to chat to edit with AI.
+- **Edit with AI** : open any saved workspace, hit "Edit with AI" and the diagram loads straight into chat context. Describe changes and they sync back to the workspace.
+- **Five diagram modes** : Architecture, Sequence Diagram, Wireframe, Freehand Sketch, and Storyboard. Your choice persists across sessions.
+- **Export** : download as PNG, JPEG, or SVG, or copy to clipboard directly from the chat toolbar. Zoom and expand inline without leaving chat.
+- **No database required** : everything saves to disk by default. Redis is supported for Vercel deployments.
+
+<table>
+  <tr>
+    <td><img src="https://github.com/user-attachments/assets/c0bbf341-c4a9-44fb-86b3-a1ed5523fcf9" alt="Freehand sketch" width="400" /></td>                               
+    <td><img src="https://github.com/user-attachments/assets/edeaeb7a-746e-4aa0-8362-e0cc3b3dce76" alt="Storyboard" width="400" /></td>                                      
+    <td><img src="https://github.com/user-attachments/assets/08650072-bcff-42c2-a1a6-83ad803f9456" alt="Architecture diagram" width="400" /></td>  
+  </tr>
+</table>
 
 ## Quick Start
 

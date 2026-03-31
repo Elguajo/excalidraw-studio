@@ -31,7 +31,7 @@ export async function startStreamableHTTPServer(
 
   const app = createMcpExpressApp({ host: "0.0.0.0" });
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: "10mb" }));
 
   // REST endpoints so the workspace page can read/write checkpoints
   app.post("/checkpoint", async (req: Request, res: Response) => {
