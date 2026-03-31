@@ -37,6 +37,15 @@ body {
   width: 0 !important;
 }
 
+/* Hide the default CopilotKit loading cursor — replaced by InlineAgentStatus */
+[data-testid="copilot-loading-cursor"] {
+  display: none !important;
+}
+
+@keyframes cpk-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Hide CopilotKit separator line */
 [data-copilotkit][data-copilotkit] {
   --copilot-kit-separator-color: transparent !important;

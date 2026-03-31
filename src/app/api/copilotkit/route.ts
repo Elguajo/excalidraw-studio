@@ -10,6 +10,7 @@ import { excalidrawSkill } from "@/skills/excalidraw-diagram";
 
 const agent = new BuiltInAgent({
   model: "openai/gpt-5.2",
+  // model: "anthropic:claude-sonnet-4-6",
   prompt: excalidrawSkill,
 }).use(
   new MCPAppsMiddleware({

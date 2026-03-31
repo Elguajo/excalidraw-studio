@@ -564,7 +564,13 @@ After the last draw_element call, the diagram is saved and a checkpointId is ret
       const checkpointId: string =
         existing?.checkpointId ?? crypto.randomUUID().replace(/-/g, "").slice(0, 18);
 
-      const allElements = [...accumulated, ...incoming];
+      const merged = [...accumulated, ...incoming];
+      const seen = new Set<string>();
+      const allElements = [...merged].reverse().filter((el: any) => {
+        if (!el.id || seen.has(el.id)) return false;
+        seen.add(el.id);
+        return true;
+      }).reverse();
       const sessionData = { elements: allElements, checkpointId, _mtime: Date.now() };
       await store.save(sessionKey, sessionData);
       await store.save(checkpointId, { elements: allElements, _mtime: Date.now() });

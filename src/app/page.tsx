@@ -49,8 +49,8 @@ const CARDS = [
         <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
       </svg>
     ),
-    title: "Fully editable",
-    desc: "Every result opens in Excalidraw - drag, reshape, annotate freely",
+    title: "Edit and iterate",
+    desc: "Opens as a local workspace - draw more yourself, then bring it back to chat",
   },
   {
     icon: (
@@ -75,9 +75,7 @@ const CARDS = [
 ];
 
 const SUGGESTIONS = [
-  "Draw a microservices architecture",
-  "Sketch a CI/CD pipeline",
-  "Draw a user auth flow",
+  "Show me how git branch works",
 ];
 
 const EDIT_SUGGESTIONS = [
@@ -94,7 +92,16 @@ const TOOL_LABELS: Record<string, string> = {
   create_view: "Rendering diagram…",
 };
 
-function AgentActivityBar() {
+const SPINNER_HTML =
+  `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6965db" stroke-width="2.5" stroke-linecap="round" style="animation:cpk-spin 0.7s linear infinite;flex-shrink:0"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
+
+function setSlotContent(slot: HTMLElement, label: string | null) {
+  slot.innerHTML = label
+    ? `<span style="display:inline-flex;align-items:center;gap:6px;margin-left:2px;">${SPINNER_HTML}<span style="color:#6965db;font-size:15px;">${label}</span></span>`
+    : "";
+}
+
+function InlineAgentStatus() {
   const { agent } = useAgent({
     updates: [UseAgentUpdate.OnMessagesChanged, UseAgentUpdate.OnRunStatusChanged],
   });
@@ -104,25 +111,39 @@ function AgentActivityBar() {
   const toolName = lastAssistant?.toolCalls?.[0]?.function?.name as string | undefined;
   const label = isRunning ? ((toolName && TOOL_LABELS[toolName]) ?? "Thinking…") : null;
 
-  if (!label) return null;
+  const slotRef = useRef<HTMLElement | null>(null);
+  const labelRef = useRef(label);
+  labelRef.current = label;
 
-  return (
-    <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-[#6965db] bg-[#6965db]/5 border-t border-[#6965db]/10">
-      <svg
-        width="10"
-        height="10"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.5"
-        strokeLinecap="round"
-        className="animate-spin shrink-0"
-      >
-        <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-      </svg>
-      <span>{label}</span>
-    </div>
-  );
+  useEffect(() => {
+    if (slotRef.current) setSlotContent(slotRef.current, label);
+  }, [label]);
+
+  useEffect(() => {
+    const sync = () => {
+      const cursor = document.querySelector('[data-testid="copilot-loading-cursor"]');
+      const slotInDom = slotRef.current && document.body.contains(slotRef.current);
+      if (cursor) {
+        if (!slotInDom) {
+          if (slotRef.current) slotRef.current.remove();
+          const slot = document.createElement("span");
+          cursor.parentNode?.insertBefore(slot, cursor);
+          slotRef.current = slot;
+          setSlotContent(slot, labelRef.current);
+        }
+      } else {
+        if (slotRef.current) {
+          slotRef.current.remove();
+          slotRef.current = null;
+        }
+      }
+    };
+    const observer = new MutationObserver(sync);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+
+  return null;
 }
 
 function DiagramSession({
@@ -566,13 +587,13 @@ function HomeContent() {
         {urlCheckpointId && <CheckpointBanner checkpointId={urlCheckpointId} />}
         <div className="flex-1 flex justify-center overflow-hidden min-h-0 pt-28">
           <div className="w-full max-w-2xl h-full flex flex-col">
-            <AgentActivityBar />
+            <InlineAgentStatus />
             <CopilotChat
               className="flex-1 min-h-0"
               labels={{
                 welcomeMessageText: urlCheckpointId
                   ? "What would you like to change?"
-                  : "Describe anything and I will draw it",
+                  : "What should I draw?",
                 chatInputPlaceholder: urlCheckpointId
                   ? "Describe your changes…"
                   : "Describe an architecture, flow, or sequence diagram…",
@@ -658,7 +679,7 @@ function HomeContent() {
                   </div>
                   <div className="pt-6 pb-4 flex flex-col items-center gap-2">
                     <p className="text-[11px] font-medium text-gray-500 tracking-wider select-none">
-                      Try these Prompts
+                      Try this Prompt
                     </p>
                     <div className="flex items-center gap-4">
                       {SUGGESTIONS.map((s) => (

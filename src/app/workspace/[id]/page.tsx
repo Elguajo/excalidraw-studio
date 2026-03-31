@@ -23,6 +23,15 @@ async function prepareElements(
   const { convertToExcalidrawElements, FONT_FAMILY, restore } =
     await import("@excalidraw/excalidraw");
 
+  // Deduplicate by id — checkpoint may accumulate same IDs across AI generations
+  const seen = new Set<string>();
+  const deduped = [...normalized].reverse().filter((el: any) => {
+    if (!el.id || seen.has(el.id)) return false;
+    seen.add(el.id);
+    return true;
+  }).reverse();
+  normalized = deduped;
+
   const hasLabels = normalized.some((el: any) => el.label != null);
   let els: any[];
 

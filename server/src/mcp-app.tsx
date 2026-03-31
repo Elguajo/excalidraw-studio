@@ -1247,8 +1247,8 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
         }
 
         // Element-by-element: 200ms/element + 400ms gap between sections
-        const ELEM_DELAY_MS = 800;
-        const SECTION_GAP_MS = 1200;
+        const ELEM_DELAY_MS = 400;
+        const SECTION_GAP_MS = 600;
         let totalDelay = 0;
         let cumulativeCount = alreadyShown;
 
