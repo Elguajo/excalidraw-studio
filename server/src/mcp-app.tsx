@@ -33,6 +33,11 @@ function fsLog(msg: string) {
   if (_logFn) _logFn(msg);
 }
 
+function wLog(...args: any[]) {
+  const msg = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
+  fsLog(msg);
+}
+
 // ============================================================
 // Shared helpers
 // ============================================================
@@ -54,10 +59,34 @@ function parsePartialElements(str: string | undefined): any[] {
   return [];
 }
 
+/** Check if a parsed element looks structurally complete (has required fields). */
+function looksComplete(el: any): boolean {
+  if (!el || typeof el !== "object" || !el.type) return false;
+  // Pseudo-elements are always complete if they have their key field
+  if (el.type === "cameraUpdate") return el.width != null && el.height != null;
+  if (el.type === "delete") return el.ids != null || el.id != null;
+  if (el.type === "restoreCheckpoint") return el.id != null;
+  // Real elements need at least type + id + x + y
+  return el.id != null && el.x != null && el.y != null;
+}
+
 function excludeIncompleteLastItem<T>(arr: T[]): T[] {
   if (!arr || arr.length === 0) return [];
   if (arr.length <= 1) return [];
+  // Keep the last element if it looks complete
+  const last = arr[arr.length - 1];
+  if (looksComplete(last)) return arr;
   return arr.slice(0, -1);
+}
+
+/** Generate a deterministic seed from an element ID string. */
+function stableSeed(id: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0) % 1e9;
 }
 
 interface ViewportRect {
@@ -101,27 +130,6 @@ function convertRawElements(els: any[]): any[] {
   return [...converted, ...pseudos];
 }
 
-/** Fix SVG viewBox to 4:3 by expanding the smaller dimension and centering. */
-function fixViewBox4x3(svg: SVGSVGElement): void {
-  const vb = svg.getAttribute("viewBox")?.split(" ").map(Number);
-  if (!vb || vb.length !== 4) return;
-  const [vx, vy, vw, vh] = vb;
-  const r = vw / vh;
-  if (Math.abs(r - 4 / 3) < 0.01) return;
-  if (r > 4 / 3) {
-    const h2 = Math.round((vw * 3) / 4);
-    svg.setAttribute(
-      "viewBox",
-      `${vx} ${vy - Math.round((h2 - vh) / 2)} ${vw} ${h2}`,
-    );
-  } else {
-    const w2 = Math.round((vh * 4) / 3);
-    svg.setAttribute(
-      "viewBox",
-      `${vx - Math.round((w2 - vw) / 2)} ${vy} ${w2} ${vh}`,
-    );
-  }
-}
 
 function extractViewportAndElements(elements: any[]): {
   viewport: ViewportRect | null;
@@ -299,7 +307,7 @@ function ShareButton({ onConfirm }: { onConfirm: () => Promise<void> }) {
 // Diagram component (Excalidraw SVG)
 // ============================================================
 
-const LERP_SPEED = 0.03; // 0–1, higher = faster snap
+const LERP_SPEED = 0.1; // 0–1, higher = faster snap
 const EXPORT_PADDING = 20;
 
 /**
@@ -363,13 +371,20 @@ function DiagramView({
   const latestRef = useRef<any[]>([]);
   const restoredRef = useRef<{ id: string; elements: any[] } | null>(null);
   const [, setCount] = useState(0);
+  // RAF-based throttle for streaming renders (~60fps cap)
+  const pendingStreamRef = useRef<(() => void) | null>(null);
+  const streamRafRef = useRef<number>(0);
 
   // Init pencil audio on first mount
   useEffect(() => {
     initPencilAudio();
   }, []);
 
-  // Set container height: 4:3 in inline, full viewport in fullscreen
+  // Natural aspect ratio of the rendered diagram (updated on each render)
+  const naturalAspectRef = useRef<number>(3 / 4); // default 4:3 until first render
+
+
+  // Resize container height based on natural aspect ratio (responds to window resize)
   useEffect(() => {
     if (!svgRef.current) return;
     if (displayMode === "fullscreen") {
@@ -378,8 +393,11 @@ function DiagramView({
     }
     const observer = new ResizeObserver(([entry]) => {
       const w = entry.contentRect.width;
-      if (w > 0 && svgRef.current) {
-        svgRef.current.style.height = `${Math.round((w * 3) / 4)}px`;
+      // Only report dimensions when SVG content exists — prevents black box during pre-warm
+      if (w > 0 && svgRef.current && svgRef.current.querySelector("svg")) {
+        const h = Math.round(w * naturalAspectRef.current);
+        svgRef.current.style.height = `${h}px`;
+        window.parent.postMessage({ type: "excalidraw-widget-dimensions", height: h }, "*");
       }
     });
     observer.observe(svgRef.current);
@@ -436,18 +454,21 @@ function DiagramView({
     const svg = svgRef.current.querySelector("svg");
     if (!svg) return;
     const { minX, minY } = sceneBoundsRef.current;
-    const { x, y, width: w, height: h } = animatedVP.current;
-    const ratio = w / h;
-    const vp4x3: ViewportRect =
-      Math.abs(ratio - 4 / 3) < 0.01
-        ? animatedVP.current
-        : ratio > 4 / 3
-          ? { x, y, width: w, height: Math.round((w * 3) / 4) }
-          : { x, y, width: Math.round((h * 4) / 3), height: h };
-    const vb = sceneToSvgViewBox(vp4x3, minX, minY);
+    // Use natural viewport ratio — no forced 4:3 crop
+    const vb = sceneToSvgViewBox(animatedVP.current, minX, minY);
     baseViewBoxRef.current = { x: vb.x, y: vb.y, w: vb.w, h: vb.h };
+    naturalAspectRef.current = vb.h / vb.w;
     applyZoom();
-  }, [applyZoom]);
+    // Notify parent to resize container to match natural aspect
+    if (displayMode !== "fullscreen") {
+      const containerW = svgRef.current.offsetWidth;
+      if (containerW > 0) {
+        const h = Math.round(containerW * naturalAspectRef.current);
+        svgRef.current.style.height = `${h}px`;
+        window.parent.postMessage({ type: "excalidraw-widget-dimensions", height: h }, "*");
+      }
+    }
+  }, [applyZoom, displayMode]);
 
   /** Lerp scene-space viewport toward target each frame. */
   const animateViewBox = useCallback(() => {
@@ -469,19 +490,24 @@ function DiagramView({
     }
   }, [applyViewBox]);
 
-  // Cleanup animation on unmount
+  // Cleanup animations on unmount
   useEffect(() => {
     return () => {
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      if (streamRafRef.current) cancelAnimationFrame(streamRafRef.current);
     };
   }, []);
 
+  // Stores the last full excalidrawEls array used for rendering — used by export handler
+  const lastRenderElsRef = useRef<any[]>([]);
+
   const renderSvgPreview = useCallback(
     async (els: any[], viewport: ViewportRect | null, baseElements?: any[]) => {
+      wLog(`renderSvgPreview: els=${els.length} base=${baseElements?.length ?? 0} viewport=${viewport ? `${viewport.width}x${viewport.height}@(${viewport.x},${viewport.y})` : "auto-fit"}`);
       if ((els.length === 0 && !baseElements?.length) || !svgRef.current)
         return;
+      const t0 = performance.now();
       try {
-        // Wait for Virgil font to load before computing text metrics
         await ensureFontsLoaded();
 
         // Convert new elements (raw → Excalidraw format)
@@ -489,6 +515,7 @@ function DiagramView({
         const baseReal =
           baseElements?.filter((el: any) => el.type !== "cameraUpdate") ?? [];
         const excalidrawEls = [...baseReal, ...convertedNew];
+        lastRenderElsRef.current = excalidrawEls;
 
         // Update scene bounds from all elements
         sceneBoundsRef.current = computeSceneBounds(excalidrawEls);
@@ -527,10 +554,9 @@ function DiagramView({
           wrapper.appendChild(svg);
         }
 
-        // Always fix SVG viewBox to 4:3, then store as base for user zoom
+        // Store natural viewBox as base for user zoom (no forced 4:3 crop)
         const renderedSvg = wrapper.querySelector("svg");
         if (renderedSvg) {
-          fixViewBox4x3(renderedSvg as SVGSVGElement);
           const vbAttr = (renderedSvg as SVGSVGElement)
             .getAttribute("viewBox")
             ?.split(" ")
@@ -559,28 +585,29 @@ function DiagramView({
           if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
           animFrameRef.current = requestAnimationFrame(animateViewBox);
         } else {
-          // No explicit viewport — use default
-          const defaultVP: ViewportRect = {
-            x: 0,
-            y: 0,
-            width: 1024,
-            height: 768,
-          };
-          onViewport?.(defaultVP);
-          targetVP.current = defaultVP;
-          if (!animatedVP.current) {
-            animatedVP.current = { ...defaultVP };
-          }
-          applyViewBox();
+          // No explicit viewport — use natural bounds from exportToSvg (content perfectly fills view)
           if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-          animFrameRef.current = requestAnimationFrame(animateViewBox);
+          animatedVP.current = null;
           targetVP.current = null;
-          if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-          // Apply user zoom on top of the fixed viewBox
+          // baseViewBoxRef was already set from the rendered SVG above — just zoom
           applyZoom();
+          // Resize container to natural aspect ratio
+          if (baseViewBoxRef.current && displayMode !== "fullscreen" && svgRef.current) {
+            const { w, h } = baseViewBoxRef.current;
+            if (w > 0) {
+              naturalAspectRef.current = h / w;
+              const containerW = svgRef.current.offsetWidth;
+              if (containerW > 0) {
+                const newH = Math.round(containerW * naturalAspectRef.current);
+                svgRef.current.style.height = `${newH}px`;
+                window.parent.postMessage({ type: "excalidraw-widget-dimensions", height: newH }, "*");
+              }
+            }
+          }
         }
-      } catch {
-        // export can fail on partial/malformed elements
+        wLog(`renderSvgPreview: done in ${(performance.now() - t0).toFixed(0)}ms — SVG inserted`);
+      } catch (err) {
+        wLog(`renderSvgPreview: exportToSvg FAILED — ${err}`);
       }
     },
     [applyViewBox, animateViewBox, applyZoom],
@@ -590,9 +617,8 @@ function DiagramView({
     if (!toolInput) return;
     const raw = toolInput.elements;
     if (!raw) return;
-
-    // Parse elements from string or array
     const str = typeof raw === "string" ? raw : JSON.stringify(raw);
+    wLog(`DiagramView useEffect: isFinal=${isFinal} _autoFit=${!!(toolInput as any)._autoFit} strLen=${str.length}`);
 
     if (isFinal) {
       // Final input — parse complete JSON, render ALL elements
@@ -638,7 +664,11 @@ function DiagramView({
         captureInitialElements(allConverted);
         // Only set elements if user hasn't edited yet (editedElements means user edits exist)
         if (!editedElements) onElements?.(allConverted);
-        if (!editedElements) renderSvgPreview(drawElements, viewport, base);
+        // On final render, pass null viewport so exportToSvg auto-fits all elements.
+        // The cameraUpdate viewport is only useful for the animated in-progress reveal;
+        // for the static final result we always want to see the full diagram.
+        const finalViewport = (toolInput as any)?._autoFit ? null : viewport;
+        if (!editedElements) renderSvgPreview(drawElements, finalViewport, base);
       };
       doFinal();
       return;
@@ -701,28 +731,41 @@ function DiagramView({
         }
       }
 
-      if (
-        drawElements.length > 0 &&
-        drawElements.length !== latestRef.current.length
-      ) {
+      // Determine if anything changed worth re-rendering
+      const countChanged = drawElements.length !== latestRef.current.length;
+      const vpChanged = viewport != null && JSON.stringify(viewport) !== JSON.stringify(targetVP.current);
+      const shouldRender = (drawElements.length > 0 && (countChanged || vpChanged));
+
+      if (shouldRender) {
         // Play pencil sound for each new element
-        const prevCount = latestRef.current.length;
-        for (let i = prevCount; i < drawElements.length; i++) {
-          playStroke(drawElements[i].type ?? "rectangle");
+        if (countChanged) {
+          const prevCount = latestRef.current.length;
+          for (let i = prevCount; i < drawElements.length; i++) {
+            playStroke(drawElements[i].type ?? "rectangle");
+          }
         }
         latestRef.current = drawElements;
         setCount(drawElements.length);
-        const jittered = drawElements.map((el: any) => ({
+        // Use stable deterministic seeds per element ID — prevents hand-drawn jitter
+        const seeded = drawElements.map((el: any) => ({
           ...el,
-          seed: Math.floor(Math.random() * 1e9),
+          seed: el.id ? stableSeed(el.id) : Math.floor(Math.random() * 1e9),
         }));
-        renderSvgPreview(jittered, viewport, base);
+        renderSvgPreview(seeded, viewport, base);
       } else if (base && base.length > 0 && latestRef.current.length === 0) {
         // First render: show restored base before new elements stream in
         renderSvgPreview([], viewport, base);
       }
     };
-    doStream();
+    // Throttle streaming renders via RAF — batch rapid partial updates
+    pendingStreamRef.current = doStream;
+    if (!streamRafRef.current) {
+      streamRafRef.current = requestAnimationFrame(() => {
+        streamRafRef.current = 0;
+        pendingStreamRef.current?.();
+        pendingStreamRef.current = null;
+      });
+    }
   }, [toolInput, isFinal, renderSvgPreview]);
 
   // Render already-converted elements directly (skip convertToExcalidrawElements)
@@ -763,7 +806,6 @@ function DiagramView({
         }
         const final = wrapper.querySelector("svg");
         if (final) {
-          fixViewBox4x3(final as SVGSVGElement);
           const vbAttr = (final as SVGSVGElement)
             .getAttribute("viewBox")
             ?.split(" ")
@@ -775,7 +817,17 @@ function DiagramView({
               w: vbAttr[2],
               h: vbAttr[3],
             };
+            naturalAspectRef.current = vbAttr[3] / vbAttr[2];
             applyZoom();
+            // Resize container to natural aspect
+            if (displayMode !== "fullscreen" && svgRef.current) {
+              const cw = svgRef.current.offsetWidth;
+              if (cw > 0) {
+                const nh = Math.round(cw * naturalAspectRef.current);
+                svgRef.current.style.height = `${nh}px`;
+                window.parent.postMessage({ type: "excalidraw-widget-dimensions", height: nh }, "*");
+              }
+            }
           }
         }
       } catch {}
@@ -827,6 +879,35 @@ function DiagramView({
       container.removeEventListener("dblclick", handleDblClick);
     };
   }, [applyZoom]);
+
+  // Export handler — uses exact excalidrawEls from last render (no re-processing)
+  useEffect(() => {
+    const handler = async (e: MessageEvent) => {
+      if (e.data?.type !== "excalidraw-export-request") return;
+      const els = lastRenderElsRef.current;
+      if (!els || els.length === 0) return;
+      try {
+        await document.fonts.load("20px Excalifont");
+        await document.fonts.ready;
+        const svg = await exportToSvg({
+          elements: els as any,
+          appState: {
+            viewBackgroundColor: "#ffffff",
+            exportBackground: true,
+          } as any,
+          files: null,
+          exportPadding: EXPORT_PADDING,
+          skipInliningFonts: false,
+        });
+        const svgStr = new XMLSerializer().serializeToString(svg);
+        window.parent.postMessage({ type: "excalidraw-svg-data", svg: svgStr }, "*");
+      } catch {
+        // silent fail
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
 
   return (
     <div
@@ -912,6 +993,7 @@ const discordIcon = (
 export function ExcalidrawAppCore({ app }: { app: App }) {
   const [toolInput, setToolInput] = useState<any>(null);
   const [inputIsFinal, setInputIsFinal] = useState(false);
+  const [drawStatus, setDrawStatus] = useState<string | null>(null);
   const [displayMode, setDisplayMode] = useState<"inline" | "fullscreen">(
     "inline",
   );
@@ -925,6 +1007,11 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
   const svgViewportRef = useRef<ViewportRect | null>(null);
   const elementsRef = useRef<any[]>([]);
   const checkpointIdRef = useRef<string | null>(null);
+  // Client-side accumulation for draw_element (section-by-section reveal)
+  const drawSessionRef = useRef<string | null>(null);
+  const drawAccumulatedRef = useRef<any[]>([]);
+  const drawStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const progressiveRevealedRef = useRef<number>(0);
 
   const toggleFullscreen = useCallback(async () => {
     if (!appRef.current) return;
@@ -1037,6 +1124,23 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
     elementsRef.current = elements;
   }, [elements]);
 
+  // Forward wheel events to parent so the expand modal clipDiv can scroll.
+  // The iframe captures all wheel events; this proxy lets the parent handle them.
+  useEffect(() => {
+    const handleWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) {
+        window.parent.postMessage(
+          { type: "excalidraw-wheel", deltaY: e.deltaY, deltaX: e.deltaX },
+          "*",
+        );
+      }
+    };
+    document.addEventListener("wheel", handleWheel, { passive: true });
+    return () => document.removeEventListener("wheel", handleWheel);
+  }, []);
+
+  // Export is handled by DiagramView (has direct access to rendered excalidrawEls)
+
   // Set up MCP event handlers when app is provided
   useEffect(() => {
     appRef.current = app;
@@ -1070,31 +1174,174 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
 
     app.ontoolinputpartial = async (input) => {
       const args = (input as any)?.arguments || input;
+      wLog(`ontoolinputpartial: sid=${args.sessionId} elemLen=${String(args.elements ?? "").length}`);
+      if (!args.elements && args.sessionId === undefined) return;
+      if (args.sessionId !== undefined) {
+        if (args.sessionId !== drawSessionRef.current) {
+          drawSessionRef.current = args.sessionId;
+          drawAccumulatedRef.current = [];
+        }
+        if (drawStatusTimerRef.current) clearTimeout(drawStatusTimerRef.current);
+        setDrawStatus("Drawing…");
+        const partialNew = excludeIncompleteLastItem(
+          parsePartialElements(args.elements || "[]")
+        );
+        const combined = [...drawAccumulatedRef.current, ...partialNew];
+        wLog(`ontoolinputpartial: combined=${combined.length} els (partial path)`);
+        if (combined.length > 0) {
+          setInputIsFinal(false);
+          setToolInput({ elements: JSON.stringify(combined) });
+        }
+        return;
+      }
       setInputIsFinal(false);
       setToolInput(args);
     };
 
     app.ontoolinput = async (input) => {
       const args = (input as any)?.arguments || input;
+      const t0 = performance.now();
+      wLog(`ontoolinput: sid=${args.sessionId ?? "none"} elemLen=${String(args.elements ?? "").length} t=${t0.toFixed(0)}ms`);
+      if (!args.elements && args.sessionId === undefined) {
+        wLog(`ontoolinput: skipping — no elements and no sessionId`);
+        return;
+      }
+      if (args.sessionId !== undefined) {
+        // draw_element complete
+        if (args.sessionId !== drawSessionRef.current) {
+          wLog(`ontoolinput: NEW SESSION ${args.sessionId} (was ${drawSessionRef.current})`);
+          drawSessionRef.current = args.sessionId;
+          drawAccumulatedRef.current = [];
+          progressiveRevealedRef.current = 0;
+        } else {
+          wLog(`ontoolinput: continuing session ${args.sessionId}`);
+        }
+        const newEls = parsePartialElements(args.elements || "[]");
+        wLog(`ontoolinput: parsed ${newEls.length} new elements — types: [${newEls.map((e: any) => e.type).join(", ")}]`);
+        drawAccumulatedRef.current = [...drawAccumulatedRef.current, ...newEls];
+
+        const allEls = drawAccumulatedRef.current;
+        const alreadyShown = progressiveRevealedRef.current;
+        const toReveal = allEls.slice(alreadyShown);
+        wLog(`ontoolinput: total=${allEls.length} alreadyShown=${alreadyShown} toReveal=${toReveal.length}`);
+
+        // Split into sections at cameraUpdate boundaries
+        const sections: any[][] = [];
+        let buf: any[] = [];
+        for (const el of toReveal) {
+          if (el.type === "cameraUpdate" && buf.length > 0) {
+            sections.push(buf);
+            buf = [el];
+          } else {
+            buf.push(el);
+          }
+        }
+        if (buf.length > 0) sections.push(buf);
+        wLog(`ontoolinput: ${sections.length} sections — ${sections.map((s, i) => `s${i}:[${s.map((e: any) => e.type).join(",")}]`).join("  ")}`);
+
+        if (sections.length === 0) {
+          wLog(`ontoolinput: no sections — rendering all ${allEls.length} at once`);
+          setInputIsFinal(true);
+          setToolInput({ elements: JSON.stringify(allEls), _autoFit: true });
+          return;
+        }
+
+        // Element-by-element: 200ms/element + 400ms gap between sections
+        const ELEM_DELAY_MS = 400;
+        const SECTION_GAP_MS = 600;
+        let totalDelay = 0;
+        let cumulativeCount = alreadyShown;
+
+        sections.forEach((section, sectionIdx) => {
+          if (sectionIdx > 0) totalDelay += SECTION_GAP_MS;
+
+          section.forEach((_el, elIdx) => {
+            cumulativeCount++;
+            const thisCount = cumulativeCount;
+            const isLast = thisCount >= allEls.length;
+            const scheduleAt = totalDelay + elIdx * ELEM_DELAY_MS;
+            const elType = (_el as any).type ?? "?";
+
+            wLog(`ontoolinput: scheduling s${sectionIdx}[${elIdx}] type=${elType} count=${thisCount}/${allEls.length} at t+${scheduleAt}ms isLast=${isLast}`);
+
+            setTimeout(() => {
+              const now = performance.now();
+              progressiveRevealedRef.current = thisCount;
+              const visible = allEls.slice(0, thisCount);
+              wLog(`RENDER s${sectionIdx}[${elIdx}] type=${elType} visible=${visible.length}/${allEls.length} t=${now.toFixed(0)}ms isLast=${isLast}`);
+              if (isLast) {
+                setInputIsFinal(true);
+                setToolInput({ elements: JSON.stringify(visible), _autoFit: true });
+              } else {
+                setInputIsFinal(false);
+                setToolInput({ elements: JSON.stringify(visible) });
+              }
+            }, scheduleAt);
+          });
+
+          totalDelay += section.length * ELEM_DELAY_MS;
+        });
+
+        wLog(`ontoolinput: all ${sections.reduce((s, sec) => s + sec.length, 0)} elements scheduled, total anim time ~${totalDelay}ms`);
+        return;
+      }
+      // create_view (no sessionId)
+      wLog(`ontoolinput: create_view path — setting final input with _autoFit`);
       setInputIsFinal(true);
-      setToolInput(args);
+      setToolInput({ ...args, _autoFit: true });
     };
 
     app.ontoolresult = (result: any) => {
-      const cpId = (result.structuredContent as { checkpointId?: string })
-        ?.checkpointId;
+      const sc = result.structuredContent as {
+        checkpointId?: string;
+        sessionId?: string;
+      };
+      wLog(`ontoolresult: sessionId=${sc?.sessionId ?? "none"} checkpointId=${sc?.checkpointId ?? "none"}`);
+
+      if (sc?.sessionId !== undefined) {
+        // draw_element result: track checkpointId but defer diagram-ready
+        // so the agent can continue calling draw_element without interruption.
+        // Fire after 4s of inactivity (cancelled by ontoolinputpartial).
+        const cpId = sc?.checkpointId;
+        if (cpId) checkpointIdRef.current = cpId;
+        if (drawStatusTimerRef.current) clearTimeout(drawStatusTimerRef.current);
+        drawStatusTimerRef.current = setTimeout(() => {
+          setDrawStatus(null);
+          const finalCpId = checkpointIdRef.current;
+          if (finalCpId) {
+            setCheckpointId(finalCpId);
+            setStorageKey(finalCpId);
+            const persisted = loadPersistedElements();
+            if (persisted && persisted.length > 0) {
+              elementsRef.current = persisted;
+              setElements(persisted);
+              setUserEdits(persisted);
+            }
+            window.parent.postMessage(
+              { type: "excalidraw-diagram-ready", checkpointId: finalCpId },
+              "*",
+            );
+          }
+        }, 4000);
+        return;
+      }
+
+      // create_view result: fire diagram-ready immediately
+      const cpId = sc?.checkpointId;
       if (cpId) {
         checkpointIdRef.current = cpId;
         setCheckpointId(cpId);
-        // Use checkpointId as localStorage key for persisting user edits
         setStorageKey(cpId);
-        // Check for persisted edits from a previous fullscreen session
         const persisted = loadPersistedElements();
         if (persisted && persisted.length > 0) {
           elementsRef.current = persisted;
           setElements(persisted);
           setUserEdits(persisted);
         }
+        window.parent.postMessage(
+          { type: "excalidraw-diagram-ready", checkpointId: cpId },
+          "*",
+        );
       }
     };
 
@@ -1111,6 +1358,23 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
           : undefined
       }
     >
+      {drawStatus && displayMode === "inline" && (
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "4px 12px",
+          fontSize: 11,
+          color: "#6965db",
+          background: "#f5f3ff",
+          borderBottom: "1px solid #ede9fe",
+        }}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ animation: "spin 1s linear infinite", flexShrink: 0 }}>
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+          <span>{drawStatus}</span>
+        </div>
+      )}
       {displayMode === "inline" && (
         <div className="toolbar">
           <ShareButton

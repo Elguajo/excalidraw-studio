@@ -21,7 +21,8 @@ const DIST_DIR = import.meta.filename.endsWith(".ts")
 // ============================================================
 const RECALL_CHEAT_SHEET = `# Excalidraw Element Format
 
-Thanks for calling read_me! Do NOT call it again in this conversation — you will not see anything new. Now use create_view to draw.
+Thanks for calling read_me! Do NOT call it again in this conversation — you will not see anything new.
+Now use draw_element (section by section, live reveal) for new diagrams, or create_view (all at once) for edits.
 
 ## Color Palette (use consistently across all tools)
 
@@ -290,6 +291,14 @@ Every create_view call returns a \`checkpointId\` in its response. To continue f
 
 The saved state (including any user edits made in fullscreen) is loaded from the client, and your new elements are appended on top. This saves tokens — you don't need to re-send the entire diagram.
 
+## Updating an existing workspace (replace mode)
+
+If the user context includes a \`checkpointId\` and \`mode: "replace"\`, pass that \`checkpointId\` as the second argument to \`create_view\` to overwrite the original workspace in place:
+
+\`create_view({ elements: "[{\"type\":\"restoreCheckpoint\",\"id\":\"<id>\"}, ...]", checkpointId: "<id>" })\`
+
+If \`mode\` is \`"new"\` or not set, omit \`checkpointId\` and a new workspace will be created.
+
 ## Deleting Elements
 
 Remove elements by id using the \`delete\` pseudo-element:
@@ -402,14 +411,16 @@ export function registerTools(server: McpServer, distDir: string, store: Checkpo
   const resourceUri = "ui://excalidraw/mcp-app.html";
 
   // ============================================================
-  // Tool 1: read_me (call before drawing)
+  // Tool 1: read_me (plain text tool — NOT an app tool)
+  // Returns cheat sheet text to the model. Keeping this as a regular tool
+  // ensures the result is surfaced in the model's context so it can proceed
+  // to call draw_element or create_view. (registerAppTool was causing the
+  // model to stop after read_me because the result wasn't forwarded to context.)
   // ============================================================
-  server.registerTool(
+  server.tool(
     "read_me",
-    {
-      description: "Returns the Excalidraw element format reference with color palettes, examples, and tips. Call this BEFORE using create_view for the first time.",
-      annotations: { readOnlyHint: true },
-    },
+    "Returns the Excalidraw element format reference with color palettes, examples, and tips. Call this BEFORE using draw_element or create_view.",
+    {},
     async (): Promise<CallToolResult> => {
       return { content: [{ type: "text", text: RECALL_CHEAT_SHEET }] };
     },
@@ -493,9 +504,10 @@ Call read_me first to learn the element format.`,
         : "";
 
       const checkpointId = crypto.randomUUID().replace(/-/g, "").slice(0, 18);
-      await store.save(checkpointId, { elements: resolvedElements });
+      await store.save(checkpointId, { elements: resolvedElements, _mtime: Date.now() });
       return {
         content: [{ type: "text", text: `Diagram displayed! Checkpoint id: "${checkpointId}".
+IMPORTANT: Now call update_session_workspace({ newCheckpointId: "${checkpointId}" }) immediately.
 If user asks to create a new diagram - simply create a new one from scratch.
 However, if the user wants to edit something on this diagram "${checkpointId}", take these steps:
 1) read widget context (using read_widget_context tool) to check if user made any manual edits first
@@ -509,7 +521,78 @@ However, if the user wants to edit something on this diagram "${checkpointId}", 
   );
 
   // ============================================================
-  // Tool 3: export_to_excalidraw (server-side proxy for CORS)
+  // Tool 3: draw_element (element-by-element rendering)
+  // ============================================================
+  registerAppTool(server,
+    "draw_element",
+    {
+      title: "Draw Element",
+      description: `Add elements to the diagram one section at a time — the widget renders after EACH call, giving a live element-by-element reveal.
+Pass 1–6 related elements per call (e.g. a zone + its nodes, or a cluster of arrows).
+Use the same sessionId for all calls that belong to the same diagram.
+Include cameraUpdate elements to pan the view as you build.
+After the last draw_element call, the diagram is saved and a checkpointId is returned.`,
+      inputSchema: z.object({
+        elements: z.string().describe(
+          "JSON string — either a single element object or an array of 1–6 elements to add in this step. Include cameraUpdate here to pan as you draw."
+        ),
+        sessionId: z.string().optional().describe(
+          "Reuse the same sessionId across all draw_element calls for the same diagram so elements accumulate"
+        ),
+        label: z.string().optional().describe(
+          "Short label shown in the progress UI, e.g. 'Title', 'Frontend zone', 'Arrows'"
+        ),
+      }),
+      _meta: { ui: { resourceUri } },
+    },
+    async ({ elements: elementsArg, sessionId, label }): Promise<CallToolResult> => {
+      let incoming: any[];
+      try {
+        const parsed = JSON.parse(elementsArg);
+        incoming = Array.isArray(parsed) ? parsed : [parsed];
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `Invalid JSON: ${(e as Error).message}` }],
+          isError: true,
+        };
+      }
+
+      const sid = sessionId || crypto.randomUUID().replace(/-/g, "").slice(0, 18);
+      const sessionKey = `draw-${sid}`;
+      const existing = await store.load(sessionKey);
+      const accumulated: any[] = existing?.elements ?? [];
+      const checkpointId: string =
+        existing?.checkpointId ?? crypto.randomUUID().replace(/-/g, "").slice(0, 18);
+
+      const merged = [...accumulated, ...incoming];
+      const seen = new Set<string>();
+      const allElements = [...merged].reverse().filter((el: any) => {
+        if (!el.id || seen.has(el.id)) return false;
+        seen.add(el.id);
+        return true;
+      }).reverse();
+      const sessionData = { elements: allElements, checkpointId, _mtime: Date.now() };
+      await store.save(sessionKey, sessionData);
+      await store.save(checkpointId, { elements: allElements, _mtime: Date.now() });
+
+      return {
+        content: [{
+          type: "text",
+          text: `${allElements.length} elements drawn${label ? ` (${label})` : ""}. SessionId: ${sid}, CheckpointId: ${checkpointId}`,
+        }],
+        structuredContent: {
+          sessionId: sid,
+          checkpointId,
+          elementCount: allElements.length,
+          label: label ?? `${incoming.length} element${incoming.length !== 1 ? "s" : ""}`,
+          elements: JSON.stringify(allElements),
+        },
+      };
+    },
+  );
+
+  // ============================================================
+  // Tool 4: export_to_excalidraw (server-side proxy for CORS)
   // Called by widget via app.callServerTool(), not by the model.
   // ============================================================
   registerAppTool(server,

@@ -10,8 +10,9 @@ const geistSans = Geist({
 });
 
 export const metadata: Metadata = {
-  title: "Excalidraw AI",
-  description: "AI-powered diagram generation with Excalidraw",
+  title: "Excalidraw MCP",
+  description:
+    "Generate and edit diagrams through natural language with Excalidraw and CopilotKit",
 };
 
 export default function RootLayout({
@@ -22,7 +23,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${geistSans.variable} antialiased`}>
-        <CopilotKit runtimeUrl="/api/copilotkit" showDevConsole={false}>{children}</CopilotKit>
+        <CopilotKit runtimeUrl="/api/copilotkit" showDevConsole={false}>
+          {children}
+        </CopilotKit>
       </body>
     </html>
   );

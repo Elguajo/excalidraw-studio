@@ -24,3 +24,29 @@ body {
   color: var(--foreground);
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }
+
+/* Hide scrollbars in CopilotKit chat */
+[data-copilotkit],
+[data-copilotkit] * {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+[data-copilotkit]::-webkit-scrollbar,
+[data-copilotkit] *::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+}
+
+/* Hide the default CopilotKit loading cursor — replaced by InlineAgentStatus */
+[data-testid="copilot-loading-cursor"] {
+  display: none !important;
+}
+
+@keyframes cpk-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Hide CopilotKit separator line */
+[data-copilotkit][data-copilotkit] {
+  --copilot-kit-separator-color: transparent !important;
+}

@@ -43,10 +43,14 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const res = await fetch(`${MCP_BASE}/checkpoint/${id}`, { method: "DELETE" });
+  const hard = req.nextUrl.searchParams.get("hard");
+  const url = hard === "true"
+    ? `${MCP_BASE}/checkpoint/${id}?hard=true`
+    : `${MCP_BASE}/checkpoint/${id}`;
+  const res = await fetch(url, { method: "DELETE" });
   return NextResponse.json(await res.json());
 }

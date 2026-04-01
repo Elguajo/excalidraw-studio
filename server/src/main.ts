@@ -9,6 +9,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import cors from "cors";
+import crypto from "node:crypto";
 import express from "express";
 import type { Request, Response } from "express";
 import {
@@ -30,13 +31,36 @@ export async function startStreamableHTTPServer(
 
   const app = createMcpExpressApp({ host: "0.0.0.0" });
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: "10mb" }));
 
   // REST endpoints so the workspace page can read/write checkpoints
+  app.post("/checkpoint", async (req: Request, res: Response) => {
+    try {
+      const id = crypto.randomUUID().replace(/-/g, "").slice(0, 18);
+      await store.save(id, {
+        elements: [],
+        title: req.body?.title ?? "Untitled",
+        _mtime: Date.now(),
+      });
+      res.json({ id });
+    } catch (e) {
+      res.status(400).json({ error: String(e) });
+    }
+  });
+
   app.get("/checkpoints", async (_req: Request, res: Response) => {
     try {
       const list = await store.list();
-      res.json(list);
+      // Exclude soft-deleted checkpoints and draw_element session keys (draw-*)
+      const visible = await Promise.all(
+        list
+          .filter((item) => !item.id.startsWith("draw-"))
+          .map(async (item) => {
+            const data = await store.load(item.id);
+            return data?.deleted || data?.redirectTo ? null : item;
+          }),
+      );
+      res.json(visible.filter(Boolean));
     } catch (e) {
       res.status(500).json({ error: String(e) });
     }
@@ -48,6 +72,10 @@ export async function startStreamableHTTPServer(
       if (!data) {
         res.status(404).json({ error: "Not found" });
         return;
+      }
+      // Auto-restore soft-deleted checkpoints when accessed directly
+      if (data.deleted) {
+        await store.save(String(req.params.id), { ...data, deleted: false });
       }
       res.json(data);
     } catch (e) {
@@ -75,8 +103,14 @@ export async function startStreamableHTTPServer(
     try {
       const id = String(req.params.id);
       const existing = await store.load(id);
-      if (!existing) { res.status(404).json({ error: "Not found" }); return; }
-      await store.save(id, { ...existing, title: req.body.title ?? existing.title });
+      if (!existing) {
+        res.status(404).json({ error: "Not found" });
+        return;
+      }
+      await store.save(id, {
+        ...existing,
+        title: req.body.title ?? existing.title,
+      });
       res.json({ ok: true });
     } catch (e) {
       res.status(400).json({ error: String(e) });
@@ -85,7 +119,20 @@ export async function startStreamableHTTPServer(
 
   app.delete("/checkpoint/:id", async (req: Request, res: Response) => {
     try {
-      await store.delete(String(req.params.id));
+      const id = String(req.params.id);
+      if (req.query.hard === "true") {
+        // Hard delete - used for temp checkpoints created during session replace
+        await store.delete(id);
+        res.json({ ok: true });
+        return;
+      }
+      const existing = await store.load(id);
+      if (!existing) {
+        res.status(404).json({ error: "Not found" });
+        return;
+      }
+      // Soft delete — keeps elements so direct links still work
+      await store.save(id, { ...existing, deleted: true });
       res.json({ ok: true });
     } catch (e) {
       res.status(400).json({ error: String(e) });
